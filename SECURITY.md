@@ -12,7 +12,7 @@ BackupHub remains in **early development**: **no production backup/restore capab
 
 ## Important limits
 
-This is not a complete security review. The web UI, privileged backup operations, authorization scopes for source data, external recovery kit, independent repository protection, restore drills, and native connectors are **not implemented** yet. An attacker who gets both the SQLite data and the live server's master key can decrypt source secrets. Store the master key in an access-controlled offline recovery kit and do not expose the backend HTTP port directly to a network.
+This is not a complete security review. A small same-origin Svelte interface for bootstrap/login/health/audit exists. Privileged backup operations, authorization scopes for source data, external recovery kit, independent repository protection, restore drills, and native source connectors are **not implemented** yet. An attacker who gets both the SQLite data and the live server's master key can decrypt source secrets. Store the master key in an access-controlled offline recovery kit and do not expose the backend HTTP port directly to a network.
 
 Use [the security bootstrap instructions](docs/security-bootstrap.md) for safe local setup. Full threat model and required acceptance tests: [specification](docs/specification-v0.1.md).
 

@@ -38,3 +38,23 @@ jobs:
           sudo apt-get install -y restic
       - name: Backup, commit, restore, verify and recovery test
         run: BACKUPHUB_RESTIC_REQUIRED=1 go test -race ./internal/storage/restic -v -count=1
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Resolve and inspect npm lockfile
+        run: |
+          npm install --no-audit --no-fund
+          echo 'BACKUPHUB_WEB_LOCK_BEGIN'
+          cat package-lock.json
+          echo 'BACKUPHUB_WEB_LOCK_END'
+      - name: Svelte/TypeScript diagnostics
+        run: npm run check
+      - name: Build production UI
+        run: npm run build

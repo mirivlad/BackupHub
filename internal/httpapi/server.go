@@ -162,7 +162,7 @@ func (s *Server) login(w http.ResponseWriter,r *http.Request){
   jsonResponse(w,500,map[string]string{"error":"authentication unavailable"});return
  }
  http.SetCookie(w,&http.Cookie{Name:sessionCookie,Value:session.Token,Path:"/api/v1",HttpOnly:true,Secure:true,SameSite:http.SameSiteStrictMode,Expires:session.Expires})
- http.SetCookie(w,&http.Cookie{Name:csrfCookie,Value:session.CSRF,Path:"/api/v1",HttpOnly:false,Secure:true,SameSite:http.SameSiteStrictMode,Expires:session.Expires})
+ http.SetCookie(w,&http.Cookie{Name:csrfCookie,Value:session.CSRF,Path:"/",HttpOnly:false,Secure:true,SameSite:http.SameSiteStrictMode,Expires:session.Expires})
  jsonResponse(w,200,map[string]any{"user":session.User,"expires_at":session.Expires.UTC().Format(time.RFC3339)})
 }
 func (s *Server) current(w http.ResponseWriter,r *http.Request)(auth.User,string,[]byte,bool){
@@ -185,7 +185,7 @@ func (s *Server) logout(w http.ResponseWriter,r *http.Request){
  if !csrfValid(r,csrf){jsonResponse(w,http.StatusForbidden,map[string]string{"error":"invalid CSRF token"});return}
  if err:=s.auth.Logout(r.Context(),raw,u.ID);err!=nil{jsonResponse(w,500,map[string]string{"error":"logout failed"});return}
  http.SetCookie(w,&http.Cookie{Name:sessionCookie,Value:"",Path:"/api/v1",MaxAge:-1,HttpOnly:true,Secure:true,SameSite:http.SameSiteStrictMode})
- http.SetCookie(w,&http.Cookie{Name:csrfCookie,Value:"",Path:"/api/v1",MaxAge:-1,Secure:true,SameSite:http.SameSiteStrictMode})
+ http.SetCookie(w,&http.Cookie{Name:csrfCookie,Value:"",Path:"/",MaxAge:-1,Secure:true,SameSite:http.SameSiteStrictMode})
  w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) me(w http.ResponseWriter,r *http.Request){

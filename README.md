@@ -15,7 +15,7 @@
 
 ## Архитектура
 
-Модульный Go-монолит, SQLite/WAL, будущий Svelte/TypeScript, REST API и Restic за адаптером хранения. Ни Kubernetes, ни внешний брокер, ни постоянно работающие агенты не требуются.
+Модульный Go-монолит, SQLite/WAL, Svelte/TypeScript, REST API и Restic за адаптером хранения. Ни Kubernetes, ни внешний брокер, ни постоянно работающие агенты не требуются.
 
 ## Разработка и безопасный локальный запуск
 
@@ -24,15 +24,16 @@ Go 1.27+:
 ```bash
 go mod download
 go test ./...
+cd web && npm ci && npm run build && cd ..
 go build -o backuphub ./cmd/backuphub
 mkdir -m 0700 -p ./local-state
 ./backuphub init -data-dir ./local-state
 ./backuphub bootstrap -data-dir ./local-state
-./backuphub serve -data-dir ./local-state
+./backuphub serve -data-dir ./local-state -ui-dir ./web/dist
 curl http://127.0.0.1:8085/api/v1/health
 ```
 
-Сервис слушает только loopback и отдаёт `backups_available: false` пока нет работающего engine. Создание первого администратора и дальнейший вход сейчас доступны через API (веб-интерфейс ещё не готов), см. [пошаговую настройку](docs/security-bootstrap.md).
+Сервис слушает только loopback и отдаёт `backups_available: false` пока нет работающего engine. Создание первого администратора, вход, состояние API и аудит доступны в первом Svelte UI (другие функции пока в разработке), см. [пошаговую настройку](docs/security-bootstrap.md).
 
 **Важно:** храните `master.key` вне основного сервера в защищённом offline-комплекте. Не публикуйте порт Backend без TLS reverse proxy.
 
@@ -43,6 +44,7 @@ curl http://127.0.0.1:8085/api/v1/health
 - [Текущая настройка безопасности](docs/security-bootstrap.md)
 - [Restic: переносимые снимки и ограничения](docs/restic-adapter.md)
 - [Долговечный планировщик и ограничения](docs/scheduler.md)
+- [Сборка первого веб-интерфейса](web/README.md)
 - [План разработки](docs/roadmap.md)
 - [ADR: лицензия](docs/adr/0001-license.md) и [ADR: архитектура](docs/adr/0002-core.md)
 
