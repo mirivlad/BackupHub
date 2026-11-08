@@ -18,6 +18,9 @@ jobs:
         run: go mod tidy
       - name: Publish module sums in CI log for initial lockfile
         run: |
+          echo 'BACKUPHUB_MOD_BEGIN'
+          cat go.mod
+          echo 'BACKUPHUB_MOD_END'
           echo 'BACKUPHUB_SUM_BEGIN'
           cat go.sum
           echo 'BACKUPHUB_SUM_END'
