@@ -16,6 +16,11 @@ jobs:
           cache: false
       - name: Resolve module checksums
         run: go mod tidy
+      - name: Publish module sums in CI log for initial lockfile
+        run: |
+          echo 'BACKUPHUB_SUM_BEGIN'
+          cat go.sum
+          echo 'BACKUPHUB_SUM_END'
       - name: Tests
         run: go test -race ./...
       - name: Vet
