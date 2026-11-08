@@ -38,6 +38,7 @@ func run(args []string)error{
  flags:=flag.NewFlagSet(command,flag.ContinueOnError)
  dataDir:=flags.String("data-dir","/var/lib/backuphub","private state directory")
  listen:=flags.String("listen","127.0.0.1:8085","HTTP loopback address")
+ uiDir:=flags.String("ui-dir","","compiled Svelte UI directory (optional)")
  version:=flags.Bool("version",false,"print version")
  if err:=flags.Parse(args);err!=nil{return err}
  if flags.NArg()!=0{return fmt.Errorf("unexpected arguments: %v",flags.Args())}
@@ -70,8 +71,10 @@ func run(args []string)error{
   if host!="localhost" && (ip==nil||!ip.IsLoopback()){
    return fmt.Errorf("refusing non-loopback HTTP address without TLS: %q",*listen)
   }
+  handler:=httpapi.New(c,v)
+  if *uiDir!="" {handler,err=httpapi.WithUI(handler,*uiDir);if err!=nil{return err}}
   server:=&http.Server{
-   Addr:*listen,Handler:httpapi.New(c,v),
+   Addr:*listen,Handler:handler,
    ReadHeaderTimeout:5*time.Second,ReadTimeout:15*time.Second,
    IdleTimeout:60*time.Second,MaxHeaderBytes:16384,
   }
