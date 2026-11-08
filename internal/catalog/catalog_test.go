@@ -48,6 +48,8 @@ func TestMigrateFromV1PreservesIdentity(t *testing.T){
  if err:=os.Chmod(dir,0700);err!=nil{t.Fatal(err)}
  raw,err:=sql.Open("sqlite",filepath.Join(dir,"catalog.db"));if err!=nil{t.Fatal(err)}
  if _,err=raw.Exec("CREATE TABLE instance (singleton INTEGER PRIMARY KEY, instance_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL)");err!=nil{t.Fatal(err)}
+ // Mirror the actual v1 schema needed by the v2 audit index.
+ if _,err=raw.Exec("CREATE TABLE audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, resource TEXT NOT NULL, metadata_json TEXT NOT NULL)");err!=nil{t.Fatal(err)}
  original:="retained-old-instance-id"
  if _,err=raw.Exec("INSERT INTO instance VALUES(1,?,?)",original,"2026-11-01T00:00:00Z");err!=nil{t.Fatal(err)}
  if _,err=raw.Exec("PRAGMA user_version=1");err!=nil{t.Fatal(err)}
