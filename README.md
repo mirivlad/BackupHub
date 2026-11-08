@@ -1,9 +1,44 @@
 # BackupHub
 
-BackupHub is an open-source, agentless-first backup and recovery manager for mixed Windows and Linux environments.
+**BackupHub** — свободная система резервного копирования и **восстановления** для смешанных инфраструктур Linux, Windows, SMB/Samba, PostgreSQL/1С и почтовых серверов.
 
-**Status:** early development. No production backups are supported yet. Do not use this software as your only backup solution.
+**Состояние:** фундамент разработки; полноценного резервного копирования пока нет. **Не используйте этот код для защиты реальных данных.** Публичный релиз 1.0 возможен только после прохождения критериев приёмки.
 
-See [the specification](docs/specification-v0.1.md) and [architecture notes](docs/architecture.md).
+## Основные принципы
 
-License: **GPL-3.0-only**.
+- **Восстановление важнее факта запуска копирования.** Отдельные статусы создания, проверки целостности и проверенного восстановления.
+- **Agentless-first.** Штатные коннекторы через SMB, SSH/SFTP, WinRM/VSS, PostgreSQL, Dovecot/IMAP. Никаких обязательных агентов.
+- **Не оболочка над Bash/cron.** Скриптовый коннектор — отдельное расширение после основной функциональности.
+- **Снимки с историей.** Каждый логически полный, с переносимыми манифестами, независимыми хранилищами, правилами удержания.
+- **Восстановление и экспорт** файлов, каталогов, наборов и полных копий из веб-интерфейса; проверяемые сценарии для БД/приложений.
+- **Один независимый экземпляр на площадку.** Объединённый просмотр нескольких узлов — перспективная возможность.
+
+## Архитектура
+
+Go (модульный монолит), SQLite/WAL, планируемый интерфейс Svelte/TypeScript, REST API, Restic за собственным интерфейсом хранения. Проект не требует Kubernetes, внешнего брокера или постоянно работающих агентов на каждом источнике.
+
+Основные контракты уже выделены в `internal/domain`, `internal/connectors`, `internal/storage`. Каталог SQLite, схема v1 и ограниченный HTTP-сервис представлены в `internal/catalog`, `internal/httpapi`.
+
+## Начало разработки
+
+Требуется **Go 1.23+**. Для локальной проверки:
+
+```bash
+go mod tidy
+go test ./...
+go run ./cmd/backuphub -data-dir ./local-state
+curl http://127.0.0.1:8085/api/v1/health
+```
+
+Сервис слушает только loopback, не содержит операций резервного копирования и честно отдаёт `backups_available: false`. Папку `local-state` не добавлять в Git. Перед сетевым доступом нужна полноценная аутентификация и HTTPS.
+
+## Документация
+
+- [Полная спецификация 0.1](docs/specification-v0.1.md) — требования P0, сценарии, архитектура, безопасность, критерии приёмки.
+- [Архитектурные границы](docs/architecture.md) — структура и правила разработки.
+- [План разработки](docs/roadmap.md) — этапы до 1.0.
+- [ADR: лицензия](docs/adr/0001-license.md) и [ADR: архитектура](docs/adr/0002-core.md).
+
+## Лицензия
+
+**GNU General Public License v3.0 only** (`GPL-3.0-only`). См. [LICENSE](LICENSE). Copyright (C) 2026 BackupHub contributors.

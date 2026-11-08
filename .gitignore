@@ -1,0 +1,15 @@
+# Go
+/build/
+/backuphub
+*.test
+*.out
+/coverage/
+# Local runtime state: MUST NEVER be committed
+/local-state/
+/.backuphub/
+/catalog.db*
+/*.token
+# Editor
+.idea/
+.vscode/
+.DS_Store
