@@ -175,6 +175,7 @@ func TestRestoreRejectsNonexistent(t *testing.T) {
 	}
 }
 func TestNoInsecureSourceConfig(t *testing.T) {
+	if _, err := exec.LookPath("restic"); err != nil { t.Skip("restic not installed") }
 	svc := serviceFixture(t)
 	source, err := svc.Create(context.Background(), CreateSource{Name: "Postgres", Kind: "postgres", Host: "db.example", Username: "readonly", Password: "test-secret", Database: "db", IntervalMinutes: 60})
 	if err != nil {

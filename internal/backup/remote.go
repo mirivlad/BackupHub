@@ -146,8 +146,7 @@ func captureSMB(ctx context.Context, c Settings, password, target string) error 
 			}
 			return nil
 		case entry.Type()&fs.ModeSymlink != 0:
-			// Do not follow symlinks/reparse points into other shares or drives.
-			return nil
+			return errors.New("SMB contains a symbolic link/reparse point: use a capable connector; refusing incomplete snapshot")
 		case entry.Type().IsRegular():
 			source, err := fsys.Open(full)
 			if err != nil {
@@ -169,7 +168,7 @@ func captureSMB(ctx context.Context, c Settings, password, target string) error 
 			files++
 			return nil
 		default:
-			return nil
+			return errors.New("SMB contains an unsupported special object; refusing incomplete snapshot")
 		}
 	})
 	if err != nil {
@@ -244,8 +243,7 @@ func captureSFTP(ctx context.Context, c Settings, password, target string) error
 			}
 			switch {
 			case info.Mode()&os.ModeSymlink != 0:
-				// Fail-closed for links: do not follow symlink loops or outside paths.
-				continue
+				return errors.New("SFTP source contains symlink; explicit symlink preservation is required before this source can be backed up")
 			case info.IsDir():
 				if err = os.MkdirAll(localPath, 0700); err != nil {
 					return err
@@ -273,6 +271,8 @@ func captureSFTP(ctx context.Context, c Settings, password, target string) error
 					return closeErr
 				}
 				files++
+			default:
+				return errors.New("SFTP contains unsupported special object; refusing incomplete snapshot")
 			}
 		}
 		return nil
