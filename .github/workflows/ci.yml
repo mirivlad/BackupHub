@@ -9,12 +9,12 @@ jobs:
   go:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: '1.27.x'
           cache: false
-      - name: Verify dependency lockfiles
+      - name: Verify locked Go dependencies
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
