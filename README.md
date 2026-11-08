@@ -42,6 +42,7 @@ curl http://127.0.0.1:8085/api/v1/health
 - [Архитектурные границы](docs/architecture.md)
 - [Текущая настройка безопасности](docs/security-bootstrap.md)
 - [Restic: переносимые снимки и ограничения](docs/restic-adapter.md)
+- [Долговечный планировщик и ограничения](docs/scheduler.md)
 - [План разработки](docs/roadmap.md)
 - [ADR: лицензия](docs/adr/0001-license.md) и [ADR: архитектура](docs/adr/0002-core.md)
 
