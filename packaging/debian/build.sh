@@ -26,4 +26,4 @@ Description: Self-hosted backup, version history and restoration system
 CONTROL
 dpkg-deb --build --root-owner-group "$BASE" "$ROOT/backuphub_${VERSION}_${ARCH}.deb"
 dpkg-deb --info "$ROOT/backuphub_${VERSION}_${ARCH}.deb"
-sha256sum "$ROOT/backuphub_${VERSION}_${ARCH}.deb" > "$ROOT/backuphub_${VERSION}_${ARCH}.deb.sha256"
+(cd "$ROOT" && sha256sum "backuphub_${VERSION}_${ARCH}.deb" > "backuphub_${VERSION}_${ARCH}.deb.sha256")

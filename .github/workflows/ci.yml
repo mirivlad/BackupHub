@@ -88,13 +88,59 @@ jobs:
       - name: Install Debian package and test HTTPS service
         run: |
           sudo apt-get install -y ./dist/backuphub_0.1.0~preview.1_amd64.deb
-          sudo systemctl restart backuphub
-          sleep 4
-          if ! curl -fk --max-time 15 https://127.0.0.1:8443/api/v1/health; then
-            sudo journalctl -u backuphub -n 80 --no-pager
+          # postinst starts the daemon and initializes Restic; do not interrupt it.
+          ready=false
+          for i in $(seq 1 30); do
+            if curl -fk --max-time 3 https://127.0.0.1:8443/api/v1/health; then ready=true; break; fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            sudo journalctl -u backuphub -n 100 --no-pager
             exit 1
           fi
+          # A subsequent ordinary systemd restart must preserve credentials.
+          sudo systemctl restart backuphub
+          sleep 2
+          curl -fk --retry 5 --retry-delay 2 --retry-connrefused https://127.0.0.1:8443/api/v1/health
           curl -fk https://127.0.0.1:8443/ | grep BackupHub
+      - name: End-to-end packaged HTTPS login, backup, ZIP and restore
+        run: |
+          set -eu
+          sudo install -d -o backuphub -g backuphub -m 0700 /opt/backuphub-smoke /opt/backuphub-smoke/Video
+          echo 'preview-roundtrip' | sudo tee /opt/backuphub-smoke/Video/clip.txt > /dev/null
+          sudo chown backuphub:backuphub /opt/backuphub-smoke/Video/clip.txt
+          sudo chmod 0600 /opt/backuphub-smoke/Video/clip.txt
+          token="$(sudo runuser -u backuphub -- /usr/bin/backuphub bootstrap -data-dir /var/lib/backuphub | sed -n '2p')"
+          test -n "$token"
+          api=https://127.0.0.1:8443/api/v1
+          curl -fksS -H 'Content-Type: application/json' -d "{\"bootstrap_token\":\"$token\",\"username\":\"smokeadmin\",\"password\":\"test-only-password-for-ci-12345\"}" "$api/setup/admin" > /dev/null
+          cookies=/tmp/backuphub-ci-cookies.txt
+          curl -fksS -c "$cookies" -H 'Content-Type: application/json' -d '{"username":"smokeadmin","password":"test-only-password-for-ci-12345"}' "$api/auth/login" > /dev/null
+          csrf="$(awk '$6 == "backuphub_csrf" {print $7}' "$cookies")"
+          test -n "$csrf"
+          headers=(-H "X-BackupHub-CSRF: $csrf" -H "Content-Type: application/json")
+          response="$(curl -fksS -b "$cookies" "${headers[@]}" -d '{"name":"CI local dataset","kind":"local","path":"/opt/backuphub-smoke","interval_minutes":60}' "$api/backup/sources")"
+          source_id="$(printf '%s' "$response" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')"
+          test -n "$source_id"
+          curl -fksS -b "$cookies" "${headers[@]}" -X POST "$api/backup/sources/$source_id/run" > /dev/null
+          snapshot=""
+          for i in $(seq 1 60); do
+            response="$(curl -fksS -b "$cookies" "$api/backup/snapshots?source_id=$source_id")"
+            snapshot="$(printf '%s' "$response" | python3 -c 'import json,sys;a=json.load(sys.stdin)["snapshots"];print(a[0]["id"] if a else "")')"
+            if [ -n "$snapshot" ]; then break; fi
+            sleep 2
+          done
+          if [ -z "$snapshot" ]; then sudo journalctl -u backuphub -n 100 --no-pager; exit 1; fi
+          curl -fksS -b "$cookies" "$api/backup/snapshots/$snapshot/download?path=Video" -o /tmp/backuphub-smoke.zip
+          python3 -c 'import zipfile; z=zipfile.ZipFile("/tmp/backuphub-smoke.zip"); assert z.read("Video/clip.txt").strip()==b"preview-roundtrip"'
+          curl -fksS -b "$cookies" "$api/backup/snapshots/$snapshot/download?mode=single&path=Video%2Fclip.txt" -o /tmp/backuphub-smoke.txt
+          grep -x 'preview-roundtrip' /tmp/backuphub-smoke.txt
+          sudo rm /opt/backuphub-smoke/Video/clip.txt
+          result="$(curl -fksS -b "$cookies" "${headers[@]}" -d '{"paths":["Video/clip.txt"]}' "$api/backup/snapshots/$snapshot/restore")"
+          restored="$(printf '%s' "$result" | python3 -c 'import json,sys;print(json.load(sys.stdin)["directory"])')"
+          test -n "$restored"
+          sudo grep -x 'preview-roundtrip' "$restored/Video/clip.txt"
+          test ! -f /opt/backuphub-smoke/Video/clip.txt
       - uses: actions/upload-artifact@v4
         with:
           name: backuphub-debian-amd64-preview
@@ -102,3 +148,32 @@ jobs:
             dist/*.deb
             dist/*.sha256
           if-no-files-found: error
+
+  publish:
+    name: Publish GitHub prerelease after acceptance checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [deb]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: backuphub-debian-amd64-preview
+          path: release
+      - name: Verify SHA256 of built Debian artifact
+        run: |
+          cd release
+          sha256sum -c backuphub_0.1.0~preview.1_amd64.deb.sha256
+      - name: Publish immutable prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v0.1.0-preview.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.1.0-preview.1 already published; refusing to overwrite release artifacts"
+            exit 0
+          fi
+          gh release create v0.1.0-preview.1 release/backuphub_0.1.0~preview.1_amd64.deb release/backuphub_0.1.0~preview.1_amd64.deb.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.1.0 Preview 1" \
+            --prerelease --notes-file docs/releases/v0.1.0-preview.1.md

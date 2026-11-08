@@ -39,74 +39,84 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 }
 func (b *boundedOutput) String() string { return b.buf.String() }
 
+// initRepository uses an on-disk initiation marker and creates Restic into
+// a sibling temporary directory. A crash before publishing leaves the target
+// repository empty, so an interrupted first start can finish using the same
+// persistent password. Existing repositories never get silently recreated.
 func initRepository(ctx context.Context, stateDir, repoPath string) (*repository, error) {
-	if repoPath == "" {
-		repoPath = filepath.Join(stateDir, "repository")
-	}
-	if !filepath.IsAbs(repoPath) || filepath.Clean(repoPath) == "/" {
-		return nil, errors.New("repository requires an absolute non-root path")
-	}
-	binary, err := exec.LookPath("restic")
-	if err != nil {
-		return nil, fmt.Errorf("restic executable not installed: %w", err)
-	}
-	r := &repository{binary: binary, path: filepath.Clean(repoPath), passwordFile: filepath.Join(stateDir, "restic.key")}
-	if err := os.MkdirAll(r.path, 0700); err != nil {
-		return nil, err
-	}
-	info, err := os.Lstat(r.path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("repository path must be a real directory")
-	}
-	keyInfo, keyErr := os.Lstat(r.passwordFile)
-	repoInfo, repoErr := os.Lstat(filepath.Join(r.path, "config"))
-	switch {
-	case keyErr == nil && repoErr == nil:
-		if !keyInfo.Mode().IsRegular() || keyInfo.Mode().Perm()&0077 != 0 {
-			return nil, errors.New("restic key must be a private regular file")
-		}
-		if !repoInfo.Mode().IsRegular() {
-			return nil, errors.New("repository config must be regular")
-		}
-		if _, err = r.run(ctx, nil, "snapshots", "--json"); err != nil {
-			return nil, fmt.Errorf("repository cannot be opened: %w", err)
-		}
-		return r, nil
-	case os.IsNotExist(keyErr) && os.IsNotExist(repoErr):
-		// Fresh site only. Neither password nor repository config may pre-exist.
-		entries, err := os.ReadDir(r.path)
-		if err != nil {
-			return nil, err
-		}
-		if len(entries) != 0 {
-			return nil, errors.New("refusing to initialize a nonempty repository path")
-		}
-		key := make([]byte, 48)
-		if _, err = rand.Read(key); err != nil {
-			return nil, err
-		}
-		f, err := os.OpenFile(r.passwordFile, os.O_WRONLY|os.O_EXCL|os.O_CREATE, 0600)
-		if err != nil {
-			return nil, err
-		}
-		_, writeErr := f.WriteString(hex.EncodeToString(key) + "\n")
-		syncErr := f.Sync()
-		closeErr := f.Close()
-		if writeErr != nil || syncErr != nil || closeErr != nil {
-			_ = os.Remove(r.passwordFile)
-			return nil, errors.New("cannot persist repository key")
-		}
-		if _, err := r.run(ctx, nil, "init"); err != nil {
-			return nil, fmt.Errorf("cannot initialize restic repository: %w", err)
-		}
-		return r, nil
-	default:
-		return nil, errors.New("repository/key mismatch: refusing to overwrite existing or lost restic credentials")
-	}
+ if repoPath == "" { repoPath = filepath.Join(stateDir, "repository") }
+ if !filepath.IsAbs(repoPath) || filepath.Clean(repoPath) == "/" {
+  return nil, errors.New("repository requires an absolute non-root path")
+ }
+ binary, err := exec.LookPath("restic")
+ if err != nil {return nil, fmt.Errorf("restic executable not installed: %w", err)}
+ r:=&repository{binary:binary,path:filepath.Clean(repoPath),passwordFile:filepath.Join(stateDir,"restic.key")}
+ if err=os.MkdirAll(r.path,0700);err!=nil{return nil,err}
+ info,err:=os.Lstat(r.path)
+ if err!=nil{return nil,err}
+ if !info.IsDir() || info.Mode()&os.ModeSymlink!=0 || info.Mode().Perm()&0077!=0 {
+  return nil, errors.New("repository directory must be real and private")
+ }
+ marker:=filepath.Join(stateDir,"restic.init-in-progress")
+ markerInfo, markerErr:=os.Lstat(marker)
+ if markerErr!=nil && !os.IsNotExist(markerErr){return nil,markerErr}
+ if markerErr==nil && (!markerInfo.Mode().IsRegular() || markerInfo.Mode().Perm()&0077!=0){
+  return nil,errors.New("repository init marker is unsafe")
+ }
+ keyInfo,keyErr:=os.Lstat(r.passwordFile)
+ if keyErr!=nil && !os.IsNotExist(keyErr){return nil,keyErr}
+ repoInfo,repoErr:=os.Lstat(filepath.Join(r.path,"config"))
+ if repoErr!=nil && !os.IsNotExist(repoErr){return nil,repoErr}
+ if repoErr==nil {
+  if keyErr!=nil || !keyInfo.Mode().IsRegular() || keyInfo.Mode().Perm()&0077!=0 || !repoInfo.Mode().IsRegular(){
+   return nil,errors.New("repository/key mismatch: refusing to overwrite existing or lost Restic credentials")
+  }
+  if _,err=r.run(ctx,nil,"snapshots","--json");err!=nil {
+   return nil,fmt.Errorf("cannot open repository: %w",err)
+  }
+  if markerErr==nil{if err=os.Remove(marker);err!=nil{return nil,err}}
+  return r,nil
+ }
+ // Config is missing. Only an empty final repository may be initialized.
+ entries,err:=os.ReadDir(r.path)
+ if err!=nil{return nil,err}
+ if len(entries)!=0{return nil,errors.New("existing repository is incomplete or damaged; recovery required")}
+ if keyErr==nil {
+  if !keyInfo.Mode().IsRegular() || keyInfo.Mode().Perm()&0077!=0 {return nil,errors.New("repository key must be a private regular file")}
+  // A key without a persisted *initialization* marker might indicate
+  // accidental deletion of a real repository. Never auto-format this path.
+  if markerErr!=nil {return nil,errors.New("repository config lost: refusing silent recreation")}
+ } else if markerErr!=nil {
+  f,err:=os.OpenFile(marker,os.O_CREATE|os.O_EXCL|os.O_WRONLY,0600)
+  if err!=nil{return nil,err}
+  if _,err=f.WriteString("initializing new repository\n");err!=nil{_ =f.Close();return nil,err}
+  if err=f.Sync();err!=nil{_ =f.Close();return nil,err}
+  if err=f.Close();err!=nil{return nil,err}
+ }
+ if keyErr!=nil {
+  key:=make([]byte,48)
+  if _,err=rand.Read(key);err!=nil{return nil,err}
+  f,err:=os.OpenFile(r.passwordFile,os.O_CREATE|os.O_EXCL|os.O_WRONLY,0600)
+  if err!=nil{return nil,err}
+  if _,err=f.WriteString(hex.EncodeToString(key)+"\n");err!=nil{_ =f.Close();return nil,err}
+  if err=f.Sync();err!=nil{_ =f.Close();return nil,err}
+  if err=f.Close();err!=nil{return nil,err}
+ }
+ // Sibling directory ensures atomic publication even on a separate mounted
+ // storage volume. Only an empty directory can be replaced by Rename.
+ candidate,err:=os.MkdirTemp(filepath.Dir(r.path),filepath.Base(r.path)+".init-")
+ if err!=nil{return nil,err}
+ published:=false
+ defer func(){if !published{_ =os.RemoveAll(candidate)}}()
+ temp:=&repository{binary:r.binary,path:candidate,passwordFile:r.passwordFile}
+ if _,err=temp.run(ctx,nil,"init");err!=nil{return nil,fmt.Errorf("cannot initialize temporary repository: %w",err)}
+ if _,err=temp.run(ctx,nil,"snapshots","--json");err!=nil{return nil,fmt.Errorf("cannot verify temporary repository: %w",err)}
+ if err=os.Rename(candidate,r.path);err!=nil{return nil,fmt.Errorf("cannot publish repository: %w",err)}
+ published=true
+ if err=os.Remove(marker);err!=nil{return nil,err}
+ return r,nil
 }
+
 func (r *repository) command(ctx context.Context, stdin io.Reader, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, r.binary, append([]string{"--repo", r.path, "--password-file", r.passwordFile, "--no-cache"}, args...)...)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "LANG=C"}
