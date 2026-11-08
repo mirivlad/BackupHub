@@ -48,12 +48,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Resolve and inspect npm lockfile
+      - name: Verify locked frontend dependencies
         run: |
-          npm install --no-audit --no-fund
-          echo 'BACKUPHUB_WEB_LOCK_BEGIN'
-          cat package-lock.json
-          echo 'BACKUPHUB_WEB_LOCK_END'
+          npm ci --no-audit --no-fund
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          git diff --exit-code -- package.json package-lock.json
       - name: Svelte/TypeScript diagnostics
         run: npm run check
       - name: Build production UI

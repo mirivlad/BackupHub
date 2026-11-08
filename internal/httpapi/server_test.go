@@ -56,7 +56,7 @@ func TestBootstrapLoginCSRFAndLogout(t *testing.T){
   if cookie.Name==sessionCookie {session=cookie}
   if cookie.Name==csrfCookie {csrf=cookie}
  }
- if session==nil||csrf==nil||!session.HttpOnly||!session.Secure||session.SameSite!=http.SameSiteStrictMode{t.Fatal("insecure session cookies")}
+ if session==nil||csrf==nil||!session.HttpOnly||!session.Secure||session.SameSite!=http.SameSiteStrictMode||csrf.Path!="/"{t.Fatal("insecure session cookies")}
  if status:=request(t,h,"GET","/api/v1/auth/me","",session).Code;status!=200{t.Fatalf("me: %d",status)}
  if status:=request(t,h,"GET","/api/v1/audit","",session).Code;status!=200{t.Fatalf("audit: %d",status)}
  if status:=request(t,h,"POST","/api/v1/auth/logout","",session,csrf).Code;status!=403{t.Fatalf("missing CSRF allowed: %d",status)}
