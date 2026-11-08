@@ -12,7 +12,7 @@ import (
 )
 
 func TestVaultRoundTripAndTamper(t *testing.T){
- c,err:=catalog.Open(t.TempDir());if err!=nil{t.Fatal(err)};defer c.Close()
+ c,err:=catalog.Open(privateDir(t));if err!=nil{t.Fatal(err)};defer c.Close()
  if _,err=Open(c);!errors.Is(err,ErrNotInitialized){t.Fatalf("expected uninitialized, got %v",err)}
  if err=Initialize(c);err!=nil{t.Fatal(err)}
  if err=Initialize(c);err==nil{t.Fatal("master key overwritten")}
@@ -28,7 +28,7 @@ func TestVaultRoundTripAndTamper(t *testing.T){
  if _,err=v.Get(context.Background(),"smb/domain-user");err==nil{t.Fatal("accepted tampered ciphertext")}
 }
 func TestMissingKeyFailsClosed(t *testing.T){
- c,err:=catalog.Open(t.TempDir());if err!=nil{t.Fatal(err)};defer c.Close()
+ c,err:=catalog.Open(privateDir(t));if err!=nil{t.Fatal(err)};defer c.Close()
  if err=Initialize(c);err!=nil{t.Fatal(err)}
  v,err:=Open(c);if err!=nil{t.Fatal(err)}
  if err=v.Put(context.Background(),"postgre/sql",[]byte("password"));err!=nil{t.Fatal(err)}
@@ -37,7 +37,7 @@ func TestMissingKeyFailsClosed(t *testing.T){
  if _,err=Open(c);!errors.Is(err,ErrNotInitialized){t.Fatalf("wanted key missing: %v",err)}
 }
 func TestRejectsLooseKeyAndInvalidName(t *testing.T){
- c,err:=catalog.Open(t.TempDir());if err!=nil{t.Fatal(err)};defer c.Close()
+ c,err:=catalog.Open(privateDir(t));if err!=nil{t.Fatal(err)};defer c.Close()
  if err=Initialize(c);err!=nil{t.Fatal(err)}
  keyfile:=filepath.Join(c.DataDir,keyName)
  if err=os.Chmod(keyfile,0644);err!=nil{t.Fatal(err)}
@@ -46,3 +46,5 @@ func TestRejectsLooseKeyAndInvalidName(t *testing.T){
  v,err:=Open(c);if err!=nil{t.Fatal(err)}
  if err=v.Put(context.Background(),"../etc/passwd",[]byte("secret"));err==nil{t.Fatal("accepted invalid traversal-like name")}
 }
+
+func privateDir(t *testing.T)string{t.Helper();dir:=t.TempDir();if err:=os.Chmod(dir,0700);err!=nil{t.Fatal(err)};return dir}

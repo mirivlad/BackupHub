@@ -9,6 +9,7 @@ import (
 
 func TestOpenPersistsIdentity(t *testing.T) {
  dir:=t.TempDir()
+ if err:=os.Chmod(dir,0700);err!=nil{t.Fatal(err)}
  first,err:=Open(dir);if err!=nil{t.Fatal(err)}
  id:=first.InstanceID
  if id=="" {t.Fatal("empty instance ID")}
@@ -34,6 +35,7 @@ func TestRejectsLooseDir(t *testing.T) {
 }
 func TestRejectsCatalogSymlink(t *testing.T){
  dir:=t.TempDir()
+ if err:=os.Chmod(dir,0700);err!=nil{t.Fatal(err)}
  target:=filepath.Join(t.TempDir(),"target")
  if err:=os.WriteFile(target,[]byte("data"),0600);err!=nil{t.Fatal(err)}
  if err:=os.Symlink(target,filepath.Join(dir,"catalog.db"));err!=nil{t.Fatal(err)}

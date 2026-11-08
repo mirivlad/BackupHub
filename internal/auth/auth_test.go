@@ -3,13 +3,14 @@ package auth
 import (
  "context"
  "errors"
+ "os"
  "testing"
 
  "github.com/mirivlad/BackupHub/internal/catalog"
 )
 
 func TestBootstrapLoginSessions(t *testing.T) {
- c,err:=catalog.Open(t.TempDir());if err!=nil{t.Fatal(err)};defer c.Close()
+ c,err:=catalog.Open(privateDir(t));if err!=nil{t.Fatal(err)};defer c.Close()
  store:=New(c);ctx:=context.Background()
  has,err:=store.HasUsers(ctx);if err!=nil||has{t.Fatalf("unexpected users: %v",err)}
  token,_,err:=store.IssueBootstrap(ctx);if err!=nil{t.Fatal(err)}
@@ -35,9 +36,11 @@ func TestPasswordHashNotPlaintext(t *testing.T){
  if _,err=passwordHash("short");err==nil{t.Fatal("short password accepted")}
 }
 func TestExpiredBootstrap(t *testing.T){
- c,err:=catalog.Open(t.TempDir());if err!=nil{t.Fatal(err)};defer c.Close()
+ c,err:=catalog.Open(privateDir(t));if err!=nil{t.Fatal(err)};defer c.Close()
  store:=New(c);ctx:=context.Background()
  token,_,err:=store.IssueBootstrap(ctx);if err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("UPDATE bootstrap SET expires_unix=1");err!=nil{t.Fatal(err)}
  if _,err=store.CreateAdmin(ctx,token,"admin","long enough password");!errors.Is(err,ErrInvalidCredentials){t.Fatalf("expired bootstrap: %v",err)}
 }
+
+func privateDir(t *testing.T)string{t.Helper();dir:=t.TempDir();if err:=os.Chmod(dir,0700);err!=nil{t.Fatal(err)};return dir}

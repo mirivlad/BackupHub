@@ -6,6 +6,7 @@ import (
  "encoding/json"
  "net/http"
  "net/http/httptest"
+ "os"
  "testing"
 
  "github.com/mirivlad/BackupHub/internal/auth"
@@ -15,7 +16,8 @@ import (
 
 func testServer(t *testing.T)(http.Handler,*catalog.Catalog){
  t.Helper()
- db,err:=catalog.Open(t.TempDir());if err!=nil{t.Fatal(err)}
+ dir:=t.TempDir();if err:=os.Chmod(dir,0700);err!=nil{t.Fatal(err)}
+ db,err:=catalog.Open(dir);if err!=nil{t.Fatal(err)}
  if err=vault.Initialize(db);err!=nil{t.Fatal(err)}
  v,err:=vault.Open(db);if err!=nil{t.Fatal(err)}
  return New(db,v),db
