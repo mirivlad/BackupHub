@@ -2,6 +2,7 @@ package catalog
 
 import (
  "context"
+ "database/sql"
  "os"
  "path/filepath"
  "testing"
@@ -40,4 +41,20 @@ func TestRejectsCatalogSymlink(t *testing.T){
  if err:=os.WriteFile(target,[]byte("data"),0600);err!=nil{t.Fatal(err)}
  if err:=os.Symlink(target,filepath.Join(dir,"catalog.db"));err!=nil{t.Fatal(err)}
  if _,err:=Open(dir);err==nil{t.Fatal("accepted symlink")}
+}
+
+func TestMigrateFromV1PreservesIdentity(t *testing.T){
+ dir:=t.TempDir()
+ if err:=os.Chmod(dir,0700);err!=nil{t.Fatal(err)}
+ raw,err:=sql.Open("sqlite",filepath.Join(dir,"catalog.db"));if err!=nil{t.Fatal(err)}
+ if _,err=raw.Exec("CREATE TABLE instance (singleton INTEGER PRIMARY KEY, instance_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL)");err!=nil{t.Fatal(err)}
+ original:="retained-old-instance-id"
+ if _,err=raw.Exec("INSERT INTO instance VALUES(1,?,?)",original,"2026-11-01T00:00:00Z");err!=nil{t.Fatal(err)}
+ if _,err=raw.Exec("PRAGMA user_version=1");err!=nil{t.Fatal(err)}
+ if err=raw.Close();err!=nil{t.Fatal(err)}
+ upgraded,err:=Open(dir);if err!=nil{t.Fatal(err)}
+ defer upgraded.Close()
+ if upgraded.InstanceID!=original{t.Fatal("instance UUID lost during migration")}
+ var count int
+ if err=upgraded.DB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE name='vault_secrets'").Scan(&count);err!=nil||count!=1{t.Fatalf("v2 migration missing: %v",err)}
 }
