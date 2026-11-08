@@ -164,7 +164,9 @@ func (a *Store) Audit(ctx context.Context,limit int)([]AuditEvent,error){
  events:=make([]AuditEvent,0)
  for rows.Next() {
   var event AuditEvent
-  if err:=rows.Scan(&event.ID,&event.At,&event.Actor,&event.Action,&event.Resource,&event.Details);err!=nil{return nil,err}
+  var details string
+  if err:=rows.Scan(&event.ID,&event.At,&event.Actor,&event.Action,&event.Resource,&details);err!=nil{return nil,err}
+  event.Details=json.RawMessage(details)
   events=append(events,event)
  }
  return events,rows.Err()
