@@ -4,7 +4,7 @@
 
 ## 1. Установка на тестовом сервере
 
-Go 1.23+:
+Go 1.27+:
 
 ```bash
 go build -o backuphub ./cmd/backuphub
