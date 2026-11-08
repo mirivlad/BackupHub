@@ -5,7 +5,6 @@ package backup
 import (
 	"context"
 	"errors"
-	"fmt"
 	"github.com/mirivlad/BackupHub/internal/catalog"
 	"github.com/mirivlad/BackupHub/internal/scheduler"
 	"github.com/mirivlad/BackupHub/internal/vault"
