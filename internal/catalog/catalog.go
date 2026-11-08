@@ -14,7 +14,7 @@ import (
  _ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // Catalog stores operational state; the portable repository manifest must
 // remain sufficient for rebuilding the snapshot index after database loss.
@@ -98,6 +98,22 @@ func migrate(ctx context.Context, db *sql.DB) error {
  }
  if version<3 {
   if err=migrateSchedulerV3(ctx,tx);err!=nil{return err}
+ }
+ if version<4 {
+  statements:=[]string{
+   `CREATE TABLE file_snapshots (
+    snapshot_id TEXT PRIMARY KEY REFERENCES snapshots(id) ON DELETE RESTRICT,
+    source_id TEXT NOT NULL REFERENCES sources(id),
+    restic_id TEXT NOT NULL,
+    root_path TEXT NOT NULL,
+    committed_at TEXT NOT NULL,
+    verification TEXT NOT NULL,
+    fidelity TEXT NOT NULL,
+    consistency TEXT NOT NULL
+   )`,
+   "CREATE INDEX file_snapshots_by_source ON file_snapshots(source_id,committed_at DESC)",
+  }
+  for _,statement:=range statements {if _,err=tx.ExecContext(ctx,statement);err!=nil{return fmt.Errorf("v4 migration: %w",err)}}
  }
  if _,err=tx.ExecContext(ctx,fmt.Sprintf("PRAGMA user_version=%d",SchemaVersion));err!=nil{return err}
  return tx.Commit()
