@@ -14,16 +14,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - name: Resolve module checksums
-        run: go mod tidy
-      - name: Publish module sums in CI log for initial lockfile
+      - name: Verify dependency lockfiles
         run: |
-          echo 'BACKUPHUB_MOD_BEGIN'
-          cat go.mod
-          echo 'BACKUPHUB_MOD_END'
-          echo 'BACKUPHUB_SUM_BEGIN'
-          cat go.sum
-          echo 'BACKUPHUB_SUM_END'
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
       - name: Tests
         run: go test -race ./...
       - name: Vet
