@@ -223,6 +223,33 @@ jobs:
               curl -fksS -b "$clean_cookies" "$cleanapi/backup/snapshots/$new_snap/download?mode=single&path=Video%2Fclip.txt" -o /tmp/backuphub-ci-disaster-restored.txt
               grep -x 'on-second-disk' /tmp/backuphub-ci-disaster-restored.txt
               sudo test ! -e /var/lib/backuphub-ci-clean/restic-*.key
+              # Also prove protected archives need the ORIGINAL key, and that
+              # a wrong key is rejected without polluting the recovered catalog.
+              protected="$(curl -fksS -b "$cookies" "${headers[@]}" -d '{"name":"CI Protected Volume","parent_path":"/mnt/backuphub-ci","folder":"BackupHubProtected","password_mode":"password"}' "$api/backup/storages")"
+              protected_id="$(printf '%s' "$protected" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')"
+              test -n "$protected_id"
+              curl -fksS -b "$cookies" "${headers[@]}" -d "{\"repository_id\":\"$protected_id\"}" "$api/backup/sources/$source_id/storage" >/dev/null
+              echo 'protected-recovery' | sudo tee /opt/backuphub-smoke/Video/clip.txt >/dev/null
+              sudo chown backuphub:backuphub /opt/backuphub-smoke/Video/clip.txt
+              curl -fksS -b "$cookies" "${headers[@]}" -X POST "$api/backup/sources/$source_id/run" >/dev/null
+              protected_snap=""
+              for i in $(seq 1 60); do
+                response="$(curl -fksS -b "$cookies" "$api/backup/snapshots?source_id=$source_id")"
+                protected_snap="$(printf '%s' "$response" | python3 -c 'import json,sys;a=json.load(sys.stdin)["snapshots"];print(a[0]["id"] if len(a)>=3 else "")')"
+                if [ -n "$protected_snap" ]; then break; fi
+                sleep 2
+              done
+              test -n "$protected_snap"
+              bad_key="$(printf '0%.0s' {1..96})"
+              status="$(curl -ksS -b "$clean_cookies" -o /tmp/backuphub-recovery-wrong-key.json -w '%{http_code}' -H "X-BackupHub-CSRF: $clean_csrf" -H "Content-Type: application/json" -d "{\"name\":\"Recovered Protected\",\"parent_path\":\"/mnt/backuphub-ci/BackupHubProtected\",\"password_mode\":\"password\",\"password\":\"$bad_key\"}" "$cleanapi/backup/storages/import")"
+              test "$status" = "400"
+              test "$(find /var/lib/backuphub-ci-clean -maxdepth 1 -name 'restic-*.key' | wc -l)" -eq 0
+              secret="$(sudo cat "/var/lib/backuphub/restic-$protected_id.key")"
+              imported_protected="$(curl -fksS -b "$clean_cookies" -H "X-BackupHub-CSRF: $clean_csrf" -H "Content-Type: application/json" -d "{\"name\":\"Recovered Protected\",\"parent_path\":\"/mnt/backuphub-ci/BackupHubProtected\",\"password_mode\":\"password\",\"password\":\"$secret\"}" "$cleanapi/backup/storages/import")"
+              printf '%s' "$imported_protected" | python3 -c 'import json,sys;r=json.load(sys.stdin);assert r["snapshots"]==1 and r["sources"]==0 and r["storage"]["password_mode"]=="password"'
+              curl -fksS -b "$clean_cookies" "$cleanapi/backup/snapshots?source_id=$source_id" | python3 -c 'import json,sys;assert len(json.load(sys.stdin)["snapshots"])==2'
+              curl -fksS -b "$clean_cookies" "$cleanapi/backup/snapshots/$protected_snap/download?mode=single&path=Video%2Fclip.txt" -o /tmp/backuphub-ci-protected-recovered.txt
+              grep -x 'protected-recovery' /tmp/backuphub-ci-protected-recovered.txt
               sudo systemctl stop backuphub-recovery-ci.service
 
               # Offline restore through stock Restic from the repo alone.
