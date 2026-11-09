@@ -133,7 +133,11 @@ func readPreparedRecovery(ctx context.Context,dir string)(RecoveryKitInfo,error)
  stat,err:=os.Lstat(dir)
  if err!=nil{return info,err}
  if !stat.IsDir()||stat.Mode()&os.ModeSymlink!=0||stat.Mode().Perm()!=0700{return info,errors.New("unsafe staged recovery directory")}
- manifest,err:=os.ReadFile(filepath.Join(dir,"recovery-manifest.json"))
+ manifestPath:=filepath.Join(dir,"recovery-manifest.json")
+ manifestStat,err:=os.Lstat(manifestPath)
+ if err!=nil{return info,err}
+ if !manifestStat.Mode().IsRegular()||manifestStat.Mode().Perm()&0077!=0{return info,errors.New("unsafe staged recovery manifest")}
+ manifest,err:=os.ReadFile(manifestPath)
  if err!=nil{return info,err}
  if len(manifest)>16384{return info,errors.New("recovery manifest too large")}
  if err=json.Unmarshal(manifest,&info);err!=nil{return info,err}
@@ -167,6 +171,39 @@ func readPreparedRecovery(ctx context.Context,dir string)(RecoveryKitInfo,error)
  var version int
  if err=db.QueryRowContext(ctx,"PRAGMA user_version").Scan(&version);err!=nil{return info,err}
  if version>info.SchemaVersion||version<1{return info,errors.New("incompatible recovered database schema")}
+ // Ensure the manifest, SQLite and physically staged keys describe exactly
+ // the same repositories. A malicious or partial ZIP must not be activated.
+ declared:=map[string]Storage{}
+ for _,v:=range info.Repositories{
+  if !safeID(v.ID)||!validPasswordMode(v.PasswordMode){return info,errors.New("invalid repository in recovery manifest")}
+  if _,exists:=declared[v.ID];exists{return info,errors.New("duplicate repository in recovery manifest")}
+  declared[v.ID]=v
+  key:=filepath.Join(dir,"restic-"+v.ID+".key")
+  if v.ID=="primary"{key=filepath.Join(dir,"restic.key")}
+  if v.PasswordMode==PasswordMode {
+   keyInfo,err:=os.Lstat(key)
+   if err!=nil{return info,fmt.Errorf("password-protected repository key missing: %w",err)}
+   if !keyInfo.Mode().IsRegular()||keyInfo.Mode().Perm()&0077!=0{return info,errors.New("unsafe repository recovery key")}
+  }else if v.ID!="primary"{
+   if _,err:=os.Lstat(key);err==nil{return info,errors.New("passwordless repository unexpectedly has a key file")}else if !os.IsNotExist(err){return info,err}
+  }
+ }
+ rows,err:=db.QueryContext(ctx,"SELECT id,path,password_mode FROM storage_repositories")
+ if err!=nil{return info,err}
+ actual:=0
+ for rows.Next(){
+  var id,path,mode string
+  if err=rows.Scan(&id,&path,&mode);err!=nil{_ =rows.Close();return info,err}
+  expected,exists:=declared[id]
+  if !exists||expected.Path!=path||expected.PasswordMode!=mode{
+   _=rows.Close()
+   return info,errors.New("recovery manifest does not match SQLite repository configuration")
+  }
+  actual++
+ }
+ if err=rows.Err();err!=nil{_ =rows.Close();return info,err}
+ _=rows.Close()
+ if actual!=len(declared){return info,errors.New("missing repositories in recovered SQLite catalog")}
  return info,nil
 }
 

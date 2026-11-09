@@ -134,9 +134,14 @@ func run(args []string)error{
   if (*tlsCert=="")!=(*tlsKey==""){return fmt.Errorf("both TLS certificate and key are required")}
   restartRequested:=make(chan struct{},1)
   var recoveryRestart atomic.Bool
-  handler:=httpapi.NewWithBackupRecovery(c,v,svc,func(){
-   select{case restartRequested<-struct{}{}:default:}
-  })
+  var handler http.Handler=httpapi.NewWithBackup(c,v,svc)
+  // Only the installed supervised unit guarantees a pre-start atomic
+  // recovery apply. Standalone runs keep the kit staged for manual restart.
+  if os.Getenv("BACKUPHUB_RECOVERY_AUTORESTART")=="1"{
+   handler=httpapi.NewWithBackupRecovery(c,v,svc,func(){
+    select{case restartRequested<-struct{}{}:default:}
+   })
+  }
   if *uiDir!="" {handler,err=httpapi.WithUI(handler,*uiDir);if err!=nil{return err}}
   server:=&http.Server{
    Addr:*listen,Handler:handler,
@@ -145,7 +150,9 @@ func run(args []string)error{
   }
   signals,stop:=signal.NotifyContext(context.Background(),os.Interrupt,syscall.SIGTERM)
   defer stop()
+  shutdownDone:=make(chan struct{})
   go func(){
+   defer close(shutdownDone)
    select{
    case <-signals.Done():
    case <-restartRequested:
@@ -163,6 +170,8 @@ func run(args []string)error{
    if err:=server.ListenAndServe();err!=nil&&err!=http.ErrServerClosed{return err}
   }
   if recoveryRestart.Load(){
+   // Ensure the upload response is flushed before the supervised exit.
+   <-shutdownDone
    // Restart=on-failure in systemd will re-enter through the root-only
    // ExecStartPre recovery apply hook before SQLite/Vault are opened.
    return fmt.Errorf("Recovery Kit staged; requesting supervised restart")

@@ -243,13 +243,14 @@ jobs:
               bad_key="$(printf '0%.0s' {1..96})"
               status="$(curl -ksS -b "$clean_cookies" -o /tmp/backuphub-recovery-wrong-key.json -w '%{http_code}' -H "X-BackupHub-CSRF: $clean_csrf" -H "Content-Type: application/json" -d "{\"name\":\"Recovered Protected\",\"parent_path\":\"/mnt/backuphub-ci/BackupHubProtected\",\"password_mode\":\"password\",\"password\":\"$bad_key\"}" "$cleanapi/backup/storages/import")"
               test "$status" = "400"
-              test "$(find /var/lib/backuphub-ci-clean -maxdepth 1 -name 'restic-*.key' | wc -l)" -eq 0
+              test "$(sudo find /var/lib/backuphub-ci-clean -maxdepth 1 -name 'restic-*.key' | wc -l)" -eq 0
               secret="$(sudo cat "/var/lib/backuphub/restic-$protected_id.key")"
               imported_protected="$(curl -fksS -b "$clean_cookies" -H "X-BackupHub-CSRF: $clean_csrf" -H "Content-Type: application/json" -d "{\"name\":\"Recovered Protected\",\"parent_path\":\"/mnt/backuphub-ci/BackupHubProtected\",\"password_mode\":\"password\",\"password\":\"$secret\"}" "$cleanapi/backup/storages/import")"
               printf '%s' "$imported_protected" | python3 -c 'import json,sys;r=json.load(sys.stdin);assert r["snapshots"]==1 and r["sources"]==0 and r["storage"]["password_mode"]=="password"'
               curl -fksS -b "$clean_cookies" "$cleanapi/backup/snapshots?source_id=$source_id" | python3 -c 'import json,sys;assert len(json.load(sys.stdin)["snapshots"])==2'
               curl -fksS -b "$clean_cookies" "$cleanapi/backup/snapshots/$protected_snap/download?mode=single&path=Video%2Fclip.txt" -o /tmp/backuphub-ci-protected-recovered.txt
               grep -x 'protected-recovery' /tmp/backuphub-ci-protected-recovered.txt
+              trap 'echo "Recovery Kit browser CI failed at shell line $LINENO" >&2' ERR
               # Full browser workflow: export one ZIP on the old server,
               # upload it to a clean BackupHub and replace its state safely.
               curl -fksS -b "$cookies" "$api/system/recovery-kit" -o /tmp/backuphub-ci-full-kit.zip
@@ -263,23 +264,28 @@ jobs:
                 sleep 2
               done
               if [ "$ready" != true ]; then sudo journalctl -u backuphub-kit-ci -n 80 --no-pager; exit 1; fi
+              echo "Fresh browser-recovery installation started"
               kit_token="$(sudo runuser -u backuphub -- backuphub bootstrap -data-dir /var/lib/backuphub-kit-ci | sed -n '2p')"
               curl -fksS -H 'Content-Type: application/json' -d "{\"bootstrap_token\":\"$kit_token\",\"username\":\"tempadmin\",\"password\":\"temporary-admin-password-for-ci-1234\"}" "$kitapi/setup/admin" >/dev/null
+              echo "Temporary browser administrator created"
               kit_cookies=/tmp/backuphub-kit-cookies.txt
               curl -fksS -c "$kit_cookies" -H 'Content-Type: application/json' -d '{"username":"tempadmin","password":"temporary-admin-password-for-ci-1234"}' "$kitapi/auth/login" >/dev/null
               kit_csrf="$(awk '$6 == "backuphub_csrf" {print $7}' "$kit_cookies")"
               test -n "$kit_csrf"
+              echo "Temporary browser administrator logged in"
               curl -fksS -b "$kit_cookies" -H "X-BackupHub-CSRF: $kit_csrf" -H 'X-BackupHub-Recovery-Confirm: REPLACE_EMPTY_INSTALL' -F "kit=@/tmp/backuphub-ci-full-kit.zip;type=application/zip" "$kitapi/system/recovery-kit/import" > /tmp/backuphub-ci-browser-import.json
-              python3 -c 'import json;d=json.load(open("/tmp/backuphub-ci-browser-import.json"));assert d["staged"] and d["restart_requested"]'
-              for i in $(seq 1 30); do
-                if ! sudo systemctl is-active --quiet backuphub-kit-ci.service; then break; fi
-                sleep 1
-              done
+              echo "Recovery Kit browser upload returned"
+              python3 -c 'import json;d=json.load(open("/tmp/backuphub-ci-browser-import.json"));assert d["staged"] and not d["restart_requested"]'
+              echo "ZIP fully validated and staged"
+              # This transient unit is deliberately unsupervised: in the
+              # shipped backuphub.service the Env flag enables auto-restart.
+              sudo systemctl stop backuphub-kit-ci.service
               test -f /var/lib/backuphub-kit-ci/.recovery-kit-apply.json
               # The DEB's root-only ExecStartPre executes this on automatic
               # restart; here we invoke the same command to test the swap in
               # an independent transient unit (which has no Restart policy).
               sudo backuphub recovery-kit-apply -data-dir /var/lib/backuphub-kit-ci
+              echo "Recovery Kit atomically activated"
               sudo test -f /var/lib/backuphub-kit-ci.before-recovery/catalog.db
               sudo test -f /var/lib/backuphub-kit-ci/catalog.db
               sudo systemd-run --unit=backuphub-kit-restored-ci --property=User=backuphub --property=Group=backuphub -- /usr/bin/backuphub serve -data-dir /var/lib/backuphub-kit-ci -listen 127.0.0.1:8445 -tls-cert /etc/backuphub/server.crt -tls-key /etc/backuphub/server.key
@@ -293,6 +299,7 @@ jobs:
               curl -fksS -c "$kit_restored_cookies" -H 'Content-Type: application/json' -d '{"username":"smokeadmin","password":"test-only-password-for-ci-12345"}' "$kitapi/auth/login" >/dev/null
               restored_csrf="$(awk '$6 == "backuphub_csrf" {print $7}' "$kit_restored_cookies")"
               test -n "$restored_csrf"
+              echo "Old administrator restored successfully"
               curl -fksS -b "$kit_restored_cookies" "$kitapi/backup/sources" | python3 -c 'import json,sys;s=json.load(sys.stdin)["sources"];assert len(s)==1 and s[0]["enabled"] is False'
               curl -fksS -b "$kit_restored_cookies" "$kitapi/backup/snapshots?source_id=$source_id" | python3 -c 'import json,sys;assert len(json.load(sys.stdin)["snapshots"])==3'
               sudo mkdir -p /mnt/backuphub-kit-remount
@@ -304,6 +311,7 @@ jobs:
               grep -x 'on-second-disk' /tmp/backuphub-kit-mounted-recovered.txt
               sudo systemctl stop backuphub-kit-restored-ci.service
               sudo umount /mnt/backuphub-kit-remount
+              trap - ERR
               sudo systemctl stop backuphub-recovery-ci.service
 
               # Offline restore through stock Restic from the repo alone.

@@ -9,6 +9,7 @@ Type=simple
 User=backuphub
 Group=backuphub
 UMask=0077
+Environment=BACKUPHUB_RECOVERY_AUTORESTART=1
 EnvironmentFile=-/etc/backuphub/backuphub.env
 # Only this one-shot prestart operation runs with root privileges. It exchanges
 # two prevalidated private state directories atomically, never live SQLite.
