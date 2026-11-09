@@ -4,7 +4,14 @@
  type Mount={path:string;filesystem:string;free_bytes:number};
  type Folder={path:string;name:string};
  type ImportResult={storage:{name:string;path:string};snapshots:number;sources:number};
+ type Storage={id:string;name:string;path:string;status:string;password_mode:Mode};
  let mounts=$state<Mount[]>([]);
+ let storages=$state<Storage[]>([]);
+ let kitFile=$state<File|null>(null);
+ let confirmReplace=$state(false);
+ let kitNotice=$state('');
+ let rebindId=$state('');
+ let rebindNotice=$state('');
  let entries=$state<Folder[]>([]);
  let chosen=$state('');
  let mode=$state<Mode>('no_password');
@@ -22,7 +29,10 @@
  }
  async function load(){
   busy=true;error='';
-  try{mounts=(await request<{mounts:Mount[]}>('/storages/mounts')).mounts}
+  try{
+   const [a,b]=await Promise.all([request<{mounts:Mount[]}>('/storages/mounts'),request<{storages:Storage[]}>('/storages')]);
+   mounts=a.mounts;storages=b.storages;
+  }
   catch(e){error=e instanceof Error?e.message:'Не удалось получить список дисков'}
   finally{busy=false}
  }
@@ -47,6 +57,39 @@
   if(file.size>512){error='Файл ключа слишком велик';return}
   keyText=await file.text();
  }
+ async function uploadKit(){
+  if(!kitFile||!confirmReplace){error='Подтверди замену пустой установки';return;}
+  busy=true;error='';kitNotice='';
+  try{
+   const form=new FormData();
+   form.append('kit',kitFile,kitFile.name);
+   const response=await fetch('/api/v1/system/recovery-kit/import',{
+    method:'POST',credentials:'same-origin',
+    headers:{'X-BackupHub-CSRF':csrf(),'X-BackupHub-Recovery-Confirm':'REPLACE_EMPTY_INSTALL'},
+    body:form
+   });
+   const data=await response.json();
+   if(!response.ok)throw new Error(data.error??'Не удалось проверить Recovery Kit');
+   kitNotice='Комплект проверен. '+(data.restart_requested
+    ?'BackupHub автоматически перезапускается, конфигурация и ключи прежней установки восстанавливаются. Затем обнови страницу и войди со СТАРЫМИ учётными данными.'
+    :'Восстановление подготовлено. Службу нужно штатно перезапустить, чтобы применить комплект.');
+   kitFile=null;confirmReplace=false;
+  }catch(e){error=e instanceof Error?e.message:'Ошибка загрузки'}
+  finally{busy=false;}
+ }
+ async function rebindStorage(){
+  if(!chosen||!rebindId)return;
+  busy=true;error='';rebindNotice='';
+  try{
+   const updated=await request<Storage>('/storages/'+encodeURIComponent(rebindId)+'/rebind',{
+    method:'POST',headers:{'Content-Type':'application/json','X-BackupHub-CSRF':csrf()},
+    body:JSON.stringify({parent_path:chosen})
+   });
+   rebindNotice='Архив «'+updated.name+'» переподключён: '+updated.path+'. Старые снимки доступны в истории.';
+   await load();
+  }catch(e){error=e instanceof Error?e.message:'Не удалось переподключить архив'}
+  finally{busy=false}
+ }
  async function importExisting(){
   busy=true;error='';result=null;
   try{
@@ -70,8 +113,22 @@
  <a class="recover-download" href="/api/v1/system/recovery-kit">Скачать Recovery Kit (.zip)</a>
 </section>
 <section class="detail-card recovery-section">
- <h2>2. Подключить архив с выжившего диска</h2>
- <p class="secondary">На новом сервере смонтируйте диск, затем укажите <strong>существующий каталог BackupHub</strong>, внутри которого находится <code>repository/config</code>. Импорт не форматирует диск, не создаёт репозиторий и не удаляет резервные копии.</p>
+ <h2>2. Загрузить сохранённый комплект на новый BackupHub</h2>
+ <p class="secondary">На новом сервере установи BackupHub, создай временного администратора, войди и загрузи ранее скачанный Recovery Kit. После проверки система вернёт прежние настройки и ключи. <strong>Это разрешено только на новой установке без заданий, источников и снимков.</strong></p>
+ <p class="warning-recovery">Временный администратор нового сервера будет заменён прежними пользователями из комплекта. После автоматического перезапуска войди с прежним логином и паролем. Пустая новая установка сохраняется отдельно для отката.</p>
+ <form class="recover-form" onsubmit={(event)=>{event.preventDefault();void uploadKit()}}>
+  <label>Архив с настройками и ключами (.zip)
+   <input type="file" accept=".zip,application/zip" onchange={(event)=>{kitFile=(event.currentTarget as HTMLInputElement).files?.[0]??null}} disabled={busy}/>
+  </label>
+  <label class="recover-check"><input type="checkbox" bind:checked={confirmReplace}/> Подтверждаю восстановление старой конфигурации вместо пустой установки</label>
+  <button type="submit" disabled={busy||!kitFile||!confirmReplace}>{busy?'Проверка комплекта…':'Загрузить и восстановить конфигурацию'}</button>
+ </form>
+ {#if kitNotice}<p class="notice" role="status">{kitNotice}</p>{/if}
+</section>
+<section class="detail-card recovery-section">
+ <h2>3. Подключить старый диск с резервными копиями</h2>
+ <p class="secondary">На новом сервере смонтируй старый диск, затем выбери <strong>существующую папку BackupHub</strong>, внутри которой находится <code>repository/config</code>. Программа проверит данные без форматирования диска.</p>
+ <p class="secondary">Если был загружен Recovery Kit, прежние хранилища уже перечислены в настройках и могут быть переподключены по новым путям. Если комплекта нет, можно восстановить историю напрямую с диска отдельным импортом.</p>
  <p class="secondary">Каталог должен принадлежать системному пользователю <code>backuphub</code> и иметь права <code>0700</code>. При отличающемся UID после переноса сначала исправьте доступ средствами администратора Linux.</p>
  {#if error}<p class="error" role="alert">{error}</p>{/if}
  {#if result}
@@ -93,7 +150,24 @@
     {/each}
    </div>
   </div>
+  {#if storages.length>0}
+   <form class="recover-form" onsubmit={(event)=>{event.preventDefault();void rebindStorage()}}>
+    <h3>Переподключить хранилище из восстановленных настроек</h3>
+    <label>Существующее хранилище
+     <select bind:value={rebindId} disabled={busy}>
+      <option value="">Выбери прежнее хранилище</option>
+      {#each storages as storage (storage.id)}
+       <option value={storage.id}>{storage.name} · {storage.status==='available'?'доступно':'не найдено'} · {storage.path}</option>
+      {/each}
+     </select>
+    </label>
+    <p class="secondary">Будут проверены все записанные снимки. Пароли и ключи берутся из Recovery Kit, повторно вводить их не нужно.</p>
+    <button type="submit" disabled={busy||!chosen||!rebindId}>Проверить и переподключить прежнее хранилище</button>
+   </form>
+   {#if rebindNotice}<p class="notice" role="status">{rebindNotice}</p>{/if}
+  {/if}
   <form class="recover-form" onsubmit={(event)=>{event.preventDefault();void importExisting()}}>
+   <h3>Импортировать историю только с диска (без Recovery Kit)</h3>
    <label>Название восстановленного хранилища<input required maxlength="120" placeholder="Архив с прежнего сервера" bind:value={name}/></label>
    <label>Режим архива<select bind:value={mode} disabled={busy}>
     <option value="no_password">Без пароля — только диск</option>
@@ -108,8 +182,8 @@
  {/if}
 </section>
 <section class="detail-card recovery-section">
- <h2>3. Полностью вернуть прежнюю конфигурацию</h2>
- <p class="secondary">Восстановление полного Recovery Kit пока выполняется только через безопасную офлайн-команду <code>backuphub recovery-kit-restore</code> в <strong>новый пустой каталог</strong> при остановленной службе. Перезапись действующей SQLite через веб-интерфейс запрещена. После восстановления необходимо вернуть прежние пути до оригинальных архивов или восстановить их отдельно.</p>
+ <h2>4. Офлайн-восстановление для нестандартных случаев</h2>
+ <p class="secondary">В стандартной DEB-установке загрузки ZIP через браузер достаточно: подтверждённый комплект применяется автоматически при штатном перезапуске службы. Для сложных случаев сохранена команда <code>backuphub recovery-kit-restore</code>, которая разворачивает комплект только в новый пустой каталог, без перезаписи существующей SQLite.</p>
 </section>
 <style>
  .recovery-section{display:grid;gap:14px;margin-bottom:18px}
@@ -122,4 +196,7 @@
  .recover-form label{display:grid;gap:6px}
  .recover-form input,.recover-form select{width:100%;padding:10px;border-radius:7px;background:#172338;border:1px solid #405474;color:#eee}
  .recover-form button{justify-self:start}
+ .recover-check{display:flex!important;align-items:center;gap:9px}
+ .recover-check input{width:auto!important}
+ .recover-form h3{margin:2px 0 0}
 </style>

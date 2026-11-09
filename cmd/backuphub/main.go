@@ -13,6 +13,7 @@ import (
  "net/http"
  "os"
  "os/signal"
+ "sync/atomic"
  "syscall"
  "time"
 
@@ -43,7 +44,7 @@ func run(args []string)error{
  command:="serve"
  if len(args)>0 {
   switch args[0] {
-  case "serve","init","bootstrap","setup-admin","recovery-kit-restore":
+  case "serve","init","bootstrap","setup-admin","recovery-kit-restore","recovery-kit-apply":
    command=args[0];args=args[1:]
   }
  }
@@ -60,6 +61,13 @@ func run(args []string)error{
  if err:=flags.Parse(args);err!=nil{return err}
  if flags.NArg()!=0{return fmt.Errorf("unexpected arguments: %v",flags.Args())}
  if *version{fmt.Println("BackupHub",httpapi.Version);return nil}
+ if command=="recovery-kit-apply" {
+  if os.Geteuid()!=0{return fmt.Errorf("recovery-kit-apply must run in systemd ExecStartPre as root")}
+  applied,err:=backup.ApplyPreparedRecovery(context.Background(),*dataDir)
+  if err!=nil{return fmt.Errorf("pending Recovery Kit could not be applied safely: %w",err)}
+  if applied{fmt.Println("Recovery Kit applied atomically; prior empty installation saved alongside state directory.")}
+  return nil
+ }
  if command=="recovery-kit-restore" {
   if *kitPath==""{return fmt.Errorf("recovery-kit-restore requires -kit path")}
   return backup.RestoreRecoveryKit(context.Background(),*kitPath,*dataDir)
@@ -124,17 +132,25 @@ func run(args []string)error{
    return fmt.Errorf("refusing non-loopback HTTP address without TLS: %q",*listen)
   }
   if (*tlsCert=="")!=(*tlsKey==""){return fmt.Errorf("both TLS certificate and key are required")}
-  handler:=httpapi.NewWithBackup(c,v,svc)
+  restartRequested:=make(chan struct{},1)
+  var recoveryRestart atomic.Bool
+  handler:=httpapi.NewWithBackupRecovery(c,v,svc,func(){
+   select{case restartRequested<-struct{}{}:default:}
+  })
   if *uiDir!="" {handler,err=httpapi.WithUI(handler,*uiDir);if err!=nil{return err}}
   server:=&http.Server{
    Addr:*listen,Handler:handler,
-   ReadHeaderTimeout:5*time.Second,ReadTimeout:15*time.Second,
+   ReadHeaderTimeout:5*time.Second,ReadTimeout:5*time.Minute,
    IdleTimeout:60*time.Second,MaxHeaderBytes:16384,
   }
   signals,stop:=signal.NotifyContext(context.Background(),os.Interrupt,syscall.SIGTERM)
   defer stop()
   go func(){
-   <-signals.Done()
+   select{
+   case <-signals.Done():
+   case <-restartRequested:
+    recoveryRestart.Store(true)
+   }
    ctx,cancel:=context.WithTimeout(context.Background(),10*time.Second)
    defer cancel()
    if err:=server.Shutdown(ctx);err!=nil{slog.Error("shutdown error","error",err)}
@@ -145,6 +161,11 @@ func run(args []string)error{
    if err:=server.ListenAndServeTLS(*tlsCert,*tlsKey);err!=nil&&err!=http.ErrServerClosed{return err}
   }else {
    if err:=server.ListenAndServe();err!=nil&&err!=http.ErrServerClosed{return err}
+  }
+  if recoveryRestart.Load(){
+   // Restart=on-failure in systemd will re-enter through the root-only
+   // ExecStartPre recovery apply hook before SQLite/Vault are opened.
+   return fmt.Errorf("Recovery Kit staged; requesting supervised restart")
   }
   return nil
  }

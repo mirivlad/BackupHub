@@ -151,7 +151,18 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if len(path) == 3 && path[0] == "sources" {
+	if len(path)==3&&path[0]=="storages"&&path[2]=="rebind"{
+  if !isAdmin{jsonResponse(w,403,map[string]string{"error":"administrator required"});return}
+  if !method(w,r,http.MethodPost){return}
+  var payload struct{ParentPath string `json:"parent_path"`}
+  if !decode(w,r,&payload){return}
+  storage,err:=s.backup.RebindStorage(r.Context(),path[1],payload.ParentPath)
+  if err!=nil{fail(err);return}
+  s.backup.Audit(r.Context(),user.ID,"storage.rebound",storage.ID)
+  jsonResponse(w,200,storage)
+  return
+ }
+ if len(path) == 3 && path[0] == "sources" {
 		id, operation := path[1], path[2]
 		if !canBackup || r.Method != http.MethodPost {
 			jsonResponse(w, 403, map[string]string{"error": "backup permission and POST required"})
