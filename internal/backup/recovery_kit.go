@@ -135,11 +135,14 @@ func RestoreRecoveryKit(ctx context.Context,kitPath,targetDir string)error{
   source,err:=f.Open();if err!=nil{return err}
   dest,err:=os.OpenFile(filepath.Join(targetDir,f.Name),os.O_CREATE|os.O_EXCL|os.O_WRONLY,0600)
   if err!=nil{_ =source.Close();return err}
-  _,copyErr:=io.CopyN(dest,source,int64(f.UncompressedSize64))
+  // Read through EOF to force archive/zip's CRC validation. CopyN
+  // could stop at the expected size without checking a damaged payload.
+  copied,copyErr:=io.Copy(dest,io.LimitReader(source,int64(f.UncompressedSize64)+1))
   syncErr:=dest.Sync()
   closeErr:=dest.Close()
   _=source.Close()
   if copyErr!=nil{return copyErr}
+  if uint64(copied)!=f.UncompressedSize64{return errors.New("recovery kit entry size mismatch")}
   if syncErr!=nil{return syncErr}
   if closeErr!=nil{return closeErr}
  }
