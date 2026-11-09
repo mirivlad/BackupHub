@@ -196,3 +196,46 @@ func TestNoInsecureSourceConfig(t *testing.T) {
 		t.Fatal("secret stored in settings")
 	}
 }
+
+func TestMultipleRepositoriesAndHistoricalRestore(t *testing.T){
+ if _,err:=exec.LookPath("restic");err!=nil{
+  if os.Getenv("BACKUPHUB_RESTIC_REQUIRED")=="1"{t.Fatal(err)}
+  t.Skip("restic unavailable")
+ }
+ svc:=serviceFixture(t)
+ ctx,cancel:=context.WithTimeout(context.Background(),4*time.Minute)
+ defer cancel()
+ storagePath:=filepath.Join(privateDir(t),"repo")
+ alt,err:=svc.RegisterStorage(ctx,"Archive disk 2",storagePath)
+ if err!=nil{t.Fatal(err)}
+ if alt.ID=="primary"||alt.Path!=storagePath{t.Fatalf("incorrect alternate storage %+v",alt)}
+ storages,err:=svc.ListStorages(ctx)
+ if err!=nil||len(storages)!=2{t.Fatalf("expected 2 storages, got %v: %v",len(storages),err)}
+ dir:=privateDir(t)
+ if err=os.WriteFile(filepath.Join(dir,"save.txt"),[]byte("old-storage"),0600);err!=nil{t.Fatal(err)}
+ first,err:=svc.Create(ctx,CreateSource{Name:"History test",Kind:"local",Path:dir,RepositoryID:"primary",IntervalMinutes:60})
+ if err!=nil{t.Fatal(err)}
+ if err=svc.Manual(ctx,first.ID);err!=nil{t.Fatal(err)}
+ if ran,err:=svc.scheduler.RunDue(ctx);err!=nil||!ran{t.Fatalf("first run failed %v, %v",ran,err)}
+ if err=svc.SelectSourceStorage(ctx,first.ID,alt.ID);err!=nil{t.Fatal(err)}
+ if err=os.WriteFile(filepath.Join(dir,"save.txt"),[]byte("new-storage"),0600);err!=nil{t.Fatal(err)}
+ if err=svc.Manual(ctx,first.ID);err!=nil{t.Fatal(err)}
+ if ran,err:=svc.scheduler.RunDue(ctx);err!=nil||!ran{t.Fatalf("second run failed %v, %v",ran,err)}
+ history,err:=svc.ListSnapshots(ctx,first.ID)
+ if err!=nil||len(history)!=2{t.Fatalf("history: %v, %v",history,err)}
+ if history[0].RepositoryID!=alt.ID||history[1].RepositoryID!="primary"{t.Fatalf("repository references swapped: %+v",history)}
+ for _,snapshot:=range history{
+  recorder:=httptest.NewRecorder()
+  if err=svc.Download(ctx,snapshot.ID,[]string{"save.txt"},true,recorder);err!=nil{t.Fatal(err)}
+  expected:="new-storage"
+  if snapshot.RepositoryID=="primary"{expected="old-storage"}
+  if recorder.Body.String()!=expected{t.Fatalf("bad snapshot on %s: %s",snapshot.RepositoryID,recorder.Body.String())}
+ }
+ // Removal of secondary mount must not create a replacement on the root disk.
+ moved:=storagePath+".detached"
+ if err=os.Rename(storagePath,moved);err!=nil{t.Fatal(err)}
+ if _,err=svc.Files(ctx,history[0].ID);err==nil{t.Fatal("storage outage silently used an empty fallback")}
+ if _,err=os.Stat(storagePath);!os.IsNotExist(err){t.Fatalf("detached repo path re-created unexpectedly: %v",err)}
+ // Historical original snapshot from primary remains independently restorable.
+ if _,err=svc.RestoreToNewDirectory(ctx,history[1].ID,[]string{"save.txt"});err!=nil{t.Fatal(err)}
+}

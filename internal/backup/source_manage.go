@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Service) ListSources(ctx context.Context) ([]Source, error) {
-	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT src.id,src.display_name,src.kind,src.settings_json,sch.interval_seconds,sch.next_run_unix,sch.enabled FROM sources src JOIN schedule_entries sch ON sch.id=src.id ORDER BY src.display_name`)
+	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT src.id,src.display_name,src.kind,src.settings_json,sch.interval_seconds,sch.next_run_unix,sch.enabled,COALESCE(sr.repository_id,'primary') FROM sources src JOIN schedule_entries sch ON sch.id=src.id LEFT JOIN schedule_repositories sr ON sr.schedule_id=sch.id ORDER BY src.display_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -21,7 +21,7 @@ func (s *Service) ListSources(ctx context.Context) ([]Source, error) {
 		var encoded string
 		var seconds, next int64
 		var enabled int
-		if err = rows.Scan(&out.ID, &out.Name, &out.Kind, &encoded, &seconds, &next, &enabled); err != nil {
+		if err = rows.Scan(&out.ID, &out.Name, &out.Kind, &encoded, &seconds, &next, &enabled,&out.RepositoryID); err != nil {
 			return nil, err
 		}
 		var settings Settings

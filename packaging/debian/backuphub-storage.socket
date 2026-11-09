@@ -1,0 +1,12 @@
+[Unit]
+Description=BackupHub storage provisioning control socket
+
+[Socket]
+ListenStream=/run/backuphub-storage.sock
+SocketMode=0660
+SocketUser=root
+SocketGroup=backuphub
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

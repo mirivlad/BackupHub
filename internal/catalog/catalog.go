@@ -14,7 +14,7 @@ import (
  _ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 // Catalog stores operational state; the portable repository manifest must
 // remain sufficient for rebuilding the snapshot index after database loss.
@@ -114,6 +114,25 @@ func migrate(ctx context.Context, db *sql.DB) error {
    "CREATE INDEX file_snapshots_by_source ON file_snapshots(source_id,committed_at DESC)",
   }
   for _,statement:=range statements {if _,err=tx.ExecContext(ctx,statement);err!=nil{return fmt.Errorf("v4 migration: %w",err)}}
+ }
+ if version<5 {
+  statements:=[]string{
+   `CREATE TABLE storage_repositories (
+      id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL UNIQUE,
+      path TEXT NOT NULL UNIQUE,
+      mount_path TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+   )`,
+   `INSERT INTO storage_repositories(id,display_name,path,created_at)
+     VALUES('primary','Встроенное хранилище','',CURRENT_TIMESTAMP)`,
+   `CREATE TABLE schedule_repositories (
+      schedule_id TEXT PRIMARY KEY REFERENCES schedule_entries(id) ON DELETE RESTRICT,
+      repository_id TEXT NOT NULL REFERENCES storage_repositories(id) ON DELETE RESTRICT
+   )`,
+   `INSERT INTO schedule_repositories(schedule_id,repository_id) SELECT id,'primary' FROM schedule_entries WHERE kind='backup'`,
+  }
+  for _,statement:=range statements {if _,err=tx.ExecContext(ctx,statement);err!=nil{return fmt.Errorf("v5 storage migration: %w",err)}}
  }
  if _,err=tx.ExecContext(ctx,fmt.Sprintf("PRAGMA user_version=%d",SchemaVersion));err!=nil{return err}
  return tx.Commit()

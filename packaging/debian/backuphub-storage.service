@@ -1,0 +1,31 @@
+[Unit]
+Description=BackupHub restricted storage directory provisioning helper
+Documentation=https://github.com/mirivlad/BackupHub
+Requires=backuphub-storage.socket
+After=backuphub-storage.socket
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/backuphub storage-helper
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=-/mnt -/media -/backup -/backup2 -/srv/backups
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+AmbientCapabilities=
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+Also=backuphub-storage.socket

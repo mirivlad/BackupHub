@@ -16,9 +16,11 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if err != nil {
 		return err
 	}
-	if t.Kind != "backup" {
-		return errors.New("unsupported executor kind")
-	}
+	if t.Kind != "backup" {return errors.New("unsupported executor kind")}
+ repoID,err:=s.taskRepository(ctx,t.ID)
+ if err!=nil{return fmt.Errorf("missing destination storage: %w",err)}
+ destination,err:=s.repositoryFor(ctx,repoID)
+ if err!=nil{return fmt.Errorf("%w: storage offline",scheduler.ErrSourceUnavailable)}
 	if source.Kind == "local" {
 		info, err := os.Lstat(settings.Path)
 		if err != nil {
@@ -45,7 +47,12 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if err = report(domain.JobCapturing); err != nil {
 		return err
 	}
-	root, cleanup, err := s.capture(ctx, source.Kind, settings, password)
+	staging:=s.stageDir
+ if repoID!=PrimaryStorageID{
+  // Stage remote trees on the SELECTED backup volume, not on the OS disk.
+  staging=filepath.Join(filepath.Dir(destination.path),"staging")
+ }
+ root, cleanup, err := s.capture(ctx, source.Kind, settings, password, staging)
 	password = ""
 	if err != nil {
 		return err
@@ -54,11 +61,11 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if err = report(domain.JobCommitting); err != nil {
 		return err
 	}
-	native, err := s.repo.treeBackup(ctx, root, source.ID)
+	native, err := destination.treeBackup(ctx, root, source.ID)
 	if err != nil {
 		return err
 	}
-	if err = s.repo.check(ctx, true); err != nil {
+	if err = destination.check(ctx, true); err != nil {
 		return fmt.Errorf("restic full data verification failed: %w", err)
 	}
 	id, err := randomID()
@@ -76,7 +83,7 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 		fidelity = "content_and_timestamps"
 	}
 	marker := portableRecord{ID: id, SourceID: source.ID, SourceName: source.Name, Kind: source.Kind, Root: root, ResticID: native, At: at, DataVerified: true, Consistency: consistency, Fidelity: fidelity}
-	markerID, err := s.repo.commit(ctx, marker)
+	markerID, err := destination.commit(ctx, marker)
 	if err != nil {
 		return err
 	}
@@ -85,7 +92,7 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO snapshots(id,dataset_id,repository_id,state,manifest_ref,created_at) VALUES(?,?,?,?,?,?)`, id, source.ID, "primary", "committed", markerID, at)
+	_, err = tx.ExecContext(ctx, `INSERT INTO snapshots(id,dataset_id,repository_id,state,manifest_ref,created_at) VALUES(?,?,?,?,?,?)`, id, source.ID, repoID, "committed", markerID, at)
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `INSERT INTO file_snapshots(snapshot_id,source_id,restic_id,root_path,committed_at,verification,fidelity,consistency) VALUES(?,?,?,?,?,?,?,?)`, id, source.ID, native, root, at, "data_sha256_verified", fidelity, consistency)
 	}
@@ -97,11 +104,15 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	}
 	return report(domain.JobVerifying)
 }
-func (s *Service) capture(ctx context.Context, kind string, settings Settings, password string) (string, func(), error) {
+func (s *Service) capture(ctx context.Context, kind string, settings Settings, password,staging string) (string, func(), error) {
 	if kind == "local" {
 		return filepath.Clean(settings.Path), func() {}, nil
 	}
-	dir, err := os.MkdirTemp(s.stageDir, "capture-")
+	if err:=os.MkdirAll(staging,0700);err!=nil{return "",func(){},err}
+ info,err:=os.Lstat(staging)
+ if err!=nil{return "",func(){},err}
+ if !info.IsDir()||info.Mode()&os.ModeSymlink!=0||info.Mode().Perm()&0077!=0{return "",func(){},errors.New("staging directory must be private and real")}
+ dir, err := os.MkdirTemp(staging, "capture-")
 	if err != nil {
 		return "", func() {}, err
 	}

@@ -27,7 +27,7 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/var/lib/backuphub /var/cache/backuphub
+ReadWritePaths=/var/lib/backuphub /var/cache/backuphub -/mnt -/media -/backup -/backup2 -/srv/backups
 LimitNOFILE=65535
 
 [Install]

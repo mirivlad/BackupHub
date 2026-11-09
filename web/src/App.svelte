@@ -164,8 +164,7 @@
       <button class:active={activeTab === 'overview'} class="nav-button" onclick={() => activeTab = 'overview'}>Обзор</button>
       {#if canAudit}<button class:active={activeTab === 'audit'} class="nav-button" onclick={() => activeTab = 'audit'}>События</button>{/if}
       <div class="side-section">УПРАВЛЕНИЕ</div>
-      <button class:active={activeTab === 'backup'} class="nav-button" onclick={() => activeTab = 'backup'}>Источники, история и восстановление</button>
-      <div class="inactive-link">Хранилища <span>Позже</span></div>
+      <button class:active={activeTab === 'backup'} class="nav-button" onclick={() => activeTab = 'backup'}>Хранилища, задания и история</button>
       <div class="sidebar-bottom">Предварительная версия · проверьте восстановление до использования</div>
     </aside>
     <div class="content-shell">

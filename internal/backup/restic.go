@@ -43,21 +43,37 @@ func (b *boundedOutput) String() string { return b.buf.String() }
 // a sibling temporary directory. A crash before publishing leaves the target
 // repository empty, so an interrupted first start can finish using the same
 // persistent password. Existing repositories never get silently recreated.
+// Reject symlinked ancestors before writing or reading a storage path.
+func validateRealParents(p string)error{
+ if !filepath.IsAbs(p){return errors.New("repository path must be absolute")}
+ for current:=filepath.Dir(filepath.Clean(p));current!="/";current=filepath.Dir(current){
+  info,err:=os.Lstat(current)
+  if err!=nil{return err}
+  if !info.IsDir()||info.Mode()&os.ModeSymlink!=0{return errors.New("repository parent is not a real directory")}
+ }
+ return nil
+}
+
 func initRepository(ctx context.Context, stateDir, repoPath string) (*repository, error) {
+ return initRepositoryNamed(ctx,stateDir,repoPath,filepath.Join(stateDir,"restic.key"),"restic.init-in-progress")
+}
+
+func initRepositoryNamed(ctx context.Context, stateDir, repoPath, keyPath, markerFilename string) (*repository, error) {
  if repoPath == "" { repoPath = filepath.Join(stateDir, "repository") }
  if !filepath.IsAbs(repoPath) || filepath.Clean(repoPath) == "/" {
   return nil, errors.New("repository requires an absolute non-root path")
  }
  binary, err := exec.LookPath("restic")
  if err != nil {return nil, fmt.Errorf("restic executable not installed: %w", err)}
- r:=&repository{binary:binary,path:filepath.Clean(repoPath),passwordFile:filepath.Join(stateDir,"restic.key")}
+ r:=&repository{binary:binary,path:filepath.Clean(repoPath),passwordFile:keyPath}
+ if err=validateRealParents(r.path);err!=nil{return nil,err}
  if err=os.MkdirAll(r.path,0700);err!=nil{return nil,err}
  info,err:=os.Lstat(r.path)
  if err!=nil{return nil,err}
  if !info.IsDir() || info.Mode()&os.ModeSymlink!=0 || info.Mode().Perm()&0077!=0 {
   return nil, errors.New("repository directory must be real and private")
  }
- marker:=filepath.Join(stateDir,"restic.init-in-progress")
+ marker:=filepath.Join(stateDir,markerFilename)
  markerInfo, markerErr:=os.Lstat(marker)
  if markerErr!=nil && !os.IsNotExist(markerErr){return nil,markerErr}
  if markerErr==nil && (!markerInfo.Mode().IsRegular() || markerInfo.Mode().Perm()&0077!=0){
@@ -121,6 +137,29 @@ func initRepository(ctx context.Context, stateDir, repoPath string) (*repository
  if err=os.Rename(candidate,r.path);err!=nil{return nil,fmt.Errorf("cannot publish repository: %w",err)}
  published=true
  if err=os.Remove(marker);err!=nil{return nil,err}
+ return r,nil
+}
+
+
+// openRepositoryNamed never creates directories or credentials: a disconnected
+// mount must never silently become a brand-new repository on the system disk.
+func openRepositoryNamed(ctx context.Context, stateDir, repoPath, keyPath string) (*repository,error) {
+ if !filepath.IsAbs(repoPath) || !filepath.IsAbs(keyPath) {return nil,errors.New("repository path must be absolute")}
+ binary,err:=exec.LookPath("restic");if err!=nil{return nil,err}
+ r:=&repository{binary:binary,path:filepath.Clean(repoPath),passwordFile:keyPath}
+ if err=validateRealParents(r.path);err!=nil{return nil,err}
+ for _,p:=range []string{r.path,filepath.Dir(r.path)} {
+  info,err:=os.Lstat(p)
+  if err!=nil{return nil,fmt.Errorf("storage unavailable: %w",err)}
+  if !info.IsDir() || info.Mode()&os.ModeSymlink!=0{return nil,errors.New("unsafe repository path")}
+ }
+ keyInfo,err:=os.Lstat(keyPath)
+ if err!=nil{return nil,fmt.Errorf("repository credentials unavailable: %w",err)}
+ if !keyInfo.Mode().IsRegular() || keyInfo.Mode().Perm()&0077!=0{return nil,errors.New("repository key must be private")}
+ config,err:=os.Lstat(filepath.Join(r.path,"config"))
+ if err!=nil{return nil,fmt.Errorf("repository unavailable: %w",err)}
+ if !config.Mode().IsRegular(){return nil,errors.New("invalid restic repository config")}
+ if _,err=r.run(ctx,nil,"snapshots","--json");err!=nil{return nil,fmt.Errorf("cannot unlock storage: %w",err)}
  return r,nil
 }
 

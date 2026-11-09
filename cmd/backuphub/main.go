@@ -2,6 +2,10 @@ package main
 
 import (
  "context"
+ "bufio"
+ "strings"
+ "bytes"
+ "golang.org/x/term"
  "flag"
  "fmt"
  "log/slog"
@@ -17,6 +21,7 @@ import (
  "github.com/mirivlad/BackupHub/internal/catalog"
  "github.com/mirivlad/BackupHub/internal/httpapi"
  "github.com/mirivlad/BackupHub/internal/vault"
+ "github.com/mirivlad/BackupHub/internal/storagehelper"
 )
 
 func main(){
@@ -29,10 +34,16 @@ func main(){
 }
 
 func run(args []string)error{
+ if len(args)>0&&args[0]=="storage-helper"{
+  if len(args)!=1{return fmt.Errorf("storage-helper takes no arguments")}
+  signals,stop:=signal.NotifyContext(context.Background(),os.Interrupt,syscall.SIGTERM)
+  defer stop()
+  return storagehelper.ServeActivated(signals)
+ }
  command:="serve"
  if len(args)>0 {
   switch args[0] {
-  case "serve","init","bootstrap":
+  case "serve","init","bootstrap","setup-admin":
    command=args[0];args=args[1:]
   }
  }
@@ -58,6 +69,34 @@ func run(args []string)error{
   if err:=vault.Initialize(c);err!=nil{return err}
   fmt.Println("BackupHub master key created; store an offline copy of",*dataDir+"/master.key")
   fmt.Println("Loss of this key means loss of access to encrypted source credentials.")
+  return nil
+ case "setup-admin":
+  if _,err:=vault.Open(c);err!=nil{return err}
+  if !term.IsTerminal(int(os.Stdin.Fd())){return fmt.Errorf("setup-admin requires an interactive terminal; noninteractive installs use the web bootstrap flow")}
+  authStore:=auth.New(c)
+  hasUsers,err:=authStore.HasUsers(context.Background())
+  if err!=nil{return err}
+  if hasUsers{return fmt.Errorf("administrator already exists; setup-admin is only for the first account")}
+  fmt.Print("Имя первого администратора: ")
+  reader:=bufio.NewReader(os.Stdin)
+  username,err:=reader.ReadString('\n')
+  if err!=nil{return err}
+  username=strings.TrimSpace(username)
+  fmt.Print("Пароль администратора (не отображается): ")
+  password,err:=term.ReadPassword(int(os.Stdin.Fd()))
+  fmt.Println()
+  if err!=nil{return err}
+  defer func(){for i:=range password{password[i]=0}}()
+  fmt.Print("Повторите пароль: ")
+  confirm,err:=term.ReadPassword(int(os.Stdin.Fd()))
+  fmt.Println()
+  if err!=nil{return err}
+  defer func(){for i:=range confirm{confirm[i]=0}}()
+  if !bytes.Equal(password,confirm){return fmt.Errorf("пароли не совпадают")}
+  token,_,err:=authStore.IssueBootstrap(context.Background())
+  if err!=nil{return err}
+  if _,err=authStore.CreateAdmin(context.Background(),token,username,string(password));err!=nil{return err}
+  fmt.Println("Администратор создан. Откройте веб-интерфейс BackupHub.")
   return nil
  case "bootstrap":
   if _,err:=vault.Open(c);err!=nil{return err}

@@ -1,13 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import StoragePane from './StoragePane.svelte';
 
   type Role = string;
-  type Source = { id:string; name:string; kind:string; host:string; share:string; path:string; username:string; database:string; interval_minutes:number; enabled:boolean; next_run:string };
+  type Source = { id:string; name:string; kind:string; host:string; share:string; path:string; username:string; database:string; interval_minutes:number; repository_id:string; enabled:boolean; next_run:string };
+  type Storage = {id:string;name:string;path:string;free_bytes:number;status:string};
   type Snapshot = { id:string; source_id:string; source_name:string; kind:string; created_at:string; verification:string; fidelity:string; consistency:string };
   type Run = { id:string; task_id:string; state:string; started_at:string; finished_at?:string; failure_code?:string };
   type File = { path:string; name:string; type:string; size:number; modified:string };
   let { role }: {role:Role} = $props();
   let sources = $state<Source[]>([]);
+  let storages = $state<Storage[]>([]);
   let snapshots = $state<Snapshot[]>([]);
   let runs = $state<Run[]>([]);
   let files = $state<File[]>([]);
@@ -18,7 +21,7 @@
   let message = $state('');
   let error = $state('');
   let editor = $state(false);
-  let form = $state({name:'',kind:'smb',host:'',share:'',path:'',username:'',password:'',database:'',interval_minutes:1440});
+  let form = $state({name:'',kind:'smb',host:'',share:'',path:'',username:'',password:'',database:'',interval_minutes:1440,repository_id:'primary'});
   const canConfigure = $derived(role === 'administrator');
   const canRun = $derived(role === 'administrator' || role === 'backup_operator');
   const canExport = $derived(role === 'administrator' || role === 'restore_operator');
@@ -36,8 +39,8 @@
   async function refresh(){
     busy=true;error='';
     try{
-      const [a,b,c]=await Promise.all([api<{sources:Source[]}>('/sources'),api<{snapshots:Snapshot[]}>('/snapshots'),api<{runs:Run[]}>('/runs')]);
-      sources=a.sources;snapshots=b.snapshots;runs=c.runs;
+      const [a,b,c,d]=await Promise.all([api<{sources:Source[]}>('/sources'),api<{snapshots:Snapshot[]}>('/snapshots'),api<{runs:Run[]}>('/runs'),api<{storages:Storage[]}>('/storages')]);
+      sources=a.sources;snapshots=b.snapshots;runs=c.runs;storages=d.storages;
     }catch(e){error=e instanceof Error?e.message:'Ошибка загрузки';}
     finally{busy=false;}
   }
@@ -46,7 +49,7 @@
     try{
       const result=await api<Source>('/sources',jsonBody(form));
       message=`Источник «${result.name}» создан. Копирование по расписанию начнётся после наступления времени задания.`;
-      form={name:'',kind:'smb',host:'',share:'',path:'',username:'',password:'',database:'',interval_minutes:1440};
+      form={name:'',kind:'smb',host:'',share:'',path:'',username:'',password:'',database:'',interval_minutes:1440,repository_id:'primary'};
       editor=false;await refresh();
     }catch(e){error=e instanceof Error?e.message:'Не удалось добавить источник';}
     finally{busy=false;}
@@ -55,6 +58,15 @@
     busy=true;error='';message='';
     try{await api(`/sources/${encodeURIComponent(id)}/${action}`,postNoBody());message=action==='run'?'Задание поставлено в очередь. Проверьте журнал запусков.':'Расписание обновлено.';await refresh();}
     catch(e){error=e instanceof Error?e.message:'Операция не выполнена';}finally{busy=false;}
+  }
+  async function changeStorage(source:Source,repositoryID:string){
+    busy=true;error='';message='';
+    try{
+      await api(`/sources/${encodeURIComponent(source.id)}/storage`,jsonBody({repository_id:repositoryID}));
+      message='Хранилище для следующих снимков изменено. Старые снимки остаются в прежнем репозитории.';
+      await refresh();
+    }catch(e){error=e instanceof Error?e.message:'Хранилище не изменено';}
+    finally{busy=false;}
   }
   async function openSnapshot(snap:Snapshot){
     busy=true;error='';message='';
@@ -85,6 +97,7 @@
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if message}<p class="notice" role="status">{message}</p>{/if}
   <div class="warning"><strong>Предварительная версия.</strong><span>Копирование SMB/SFTP — без гарантии ACL и согласованности открытых файлов. PostgreSQL сохраняется как логический дамп. Нативный профиль PostgreSQL Pro 1C и AD пока не поддерживаются.</span></div>
+  {#if canConfigure}<StoragePane onCreated={refresh}/>{/if}
   <section class="detail-card">
     <div class="backup-heading"><h2>Источники</h2>{#if canConfigure}<button class="outline" onclick={()=>editor=!editor}>{editor?'Закрыть':'Добавить источник'}</button>{/if}</div>
     {#if editor && canConfigure}
@@ -108,13 +121,14 @@
           <label>Название базы <input bind:value={form.database} required placeholder="production" /></label>
           <p class="secondary">Только обычный pg_dump. Для PostgreSQL Pro 1C с большой public.config нужен отдельный профиль (ещё не готов).</p>
         {/if}
+        <label>Хранилище назначения <select bind:value={form.repository_id} required>{#each storages.filter(x=>x.status==='available') as storage (storage.id)}<option value={storage.id}>{storage.name} · {storage.path}</option>{/each}</select></label>
         <label>Интервал (минуты) <input type="number" bind:value={form.interval_minutes} min="5" max="525600" required /></label>
         <button type="submit" disabled={busy}>Сохранить источник</button>
       </form>
     {/if}
     {#if sources.length===0}<p class="secondary">Источников пока нет. Добавьте первый, чтобы создать расписание.</p>{:else}
-      <div class="table-scroll"><table><thead><tr><th>Источник</th><th>Тип</th><th>Период</th><th>Следующее выполнение</th><th>Действия</th></tr></thead><tbody>
-      {#each sources as source (source.id)}<tr><td><strong>{source.name}</strong><small class="source-location">{source.kind==='smb'?`//${source.host}/${source.share}/${source.path}`:source.kind==='postgres'?`${source.host}/${source.database}`:source.path}</small></td><td>{source.kind}</td><td>{source.interval_minutes} мин.</td><td>{source.enabled?datetime(source.next_run):'Приостановлено'}</td><td class="action-cell">{#if canRun}<button class="outline" onclick={()=>void act(source.id,'run')} disabled={busy}>Запустить</button>{/if}{#if canConfigure}<button class="text-button" onclick={()=>void act(source.id,source.enabled?'pause':'resume')} disabled={busy}>{source.enabled?'Пауза':'Включить'}</button>{/if}</td></tr>{/each}
+      <div class="table-scroll"><table><thead><tr><th>Источник</th><th>Тип</th><th>Период</th><th>Хранилище</th><th>Следующее выполнение</th><th>Действия</th></tr></thead><tbody>
+      {#each sources as source (source.id)}<tr><td><strong>{source.name}</strong><small class="source-location">{source.kind==='smb'?`//${source.host}/${source.share}/${source.path}`:source.kind==='postgres'?`${source.host}/${source.database}`:source.path}</small></td><td>{source.kind}</td><td>{source.interval_minutes} мин.</td><td>{#if canConfigure}<select disabled={busy} value={source.repository_id} onchange={(e)=>void changeStorage(source,e.currentTarget.value)}>{#each storages as storage (storage.id)}<option value={storage.id}>{storage.name}</option>{/each}</select>{:else}{storages.find(x=>x.id===source.repository_id)?.name??source.repository_id}{/if}</td><td>{source.enabled?datetime(source.next_run):'Приостановлено'}</td><td class="action-cell">{#if canRun}<button class="outline" onclick={()=>void act(source.id,'run')} disabled={busy}>Запустить</button>{/if}{#if canConfigure}<button class="text-button" onclick={()=>void act(source.id,source.enabled?'pause':'resume')} disabled={busy}>{source.enabled?'Пауза':'Включить'}</button>{/if}</td></tr>{/each}
       </tbody></table></div>
     {/if}
   </section>
@@ -146,5 +160,5 @@
 </section>
 
 <style>
- .backup-workspace{display:grid;gap:18px}.backup-heading{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:14px}.backup-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;padding:16px 0}.backup-form label{display:grid;gap:6px}.backup-form input,.backup-form select,.backup-search{width:100%;max-width:100%;min-width:0;padding:10px;border:1px solid #405474;border-radius:7px;background:#172338;color:#eee}.backup-form p{grid-column:1/-1}.backup-form button{align-self:end}.backup-actions{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}.source-location{display:block;opacity:.7;font-size:12px;margin-top:4px}.path-cell{max-width:480px;overflow-wrap:anywhere}.action-cell{white-space:nowrap}.backup-file-list{max-height:520px;overflow:auto}.backup-heading h2{margin:0 0 5px}
+ .backup-workspace{display:grid;gap:18px}.backup-heading{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:14px}.backup-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;padding:16px 0}.backup-form label{display:grid;gap:6px} .backup-form input,.backup-form select,.table-scroll td select,.backup-search{width:100%;max-width:100%;min-width:0;padding:10px;border:1px solid #405474;border-radius:7px;background:#172338;color:#eee}.backup-form p{grid-column:1/-1}.backup-form button{align-self:end}.backup-actions{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}.source-location{display:block;opacity:.7;font-size:12px;margin-top:4px}.path-cell{max-width:480px;overflow-wrap:anywhere}.action-cell{white-space:nowrap}.backup-file-list{max-height:520px;overflow:auto}.backup-heading h2{margin:0 0 5px}
 </style>
