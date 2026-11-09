@@ -82,6 +82,7 @@ func TestV4ToV5PreservesBackupScheduleDestination(t *testing.T){
  if err!=nil{t.Fatal(err)}
  _,err=c.DB.Exec("INSERT INTO schedule_entries(id,dataset_id,kind,interval_seconds,next_run_unix,enabled,created_at) VALUES('schedule-v4','source-v4','backup',3600,100,1,'2026-11-01T00:00:00Z')")
  if err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("DROP TABLE system_settings");err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("DROP TABLE schedule_repositories");err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("DROP TABLE storage_repositories");err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("PRAGMA user_version=4");err!=nil{t.Fatal(err)}
@@ -91,4 +92,33 @@ func TestV4ToV5PreservesBackupScheduleDestination(t *testing.T){
  defer migrated.Close()
  var got string
  if err=migrated.DB.QueryRow("SELECT repository_id FROM schedule_repositories WHERE schedule_id='schedule-v4'").Scan(&got);err!=nil||got!="primary"{t.Fatalf("existing task repository lost: %q err=%v",got,err)}
+}
+
+func TestV5ToV6DefaultsExistingRepositoriesToProtected(t *testing.T){
+ dir:=t.TempDir()
+ if err:=os.Chmod(dir,0700);err!=nil{t.Fatal(err)}
+ c,err:=Open(dir);if err!=nil{t.Fatal(err)}
+ _,err=c.DB.Exec("INSERT INTO storage_repositories(id,display_name,path,created_at) VALUES('external','old disk','/mnt/old','2026-11-01')")
+ if err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("DROP TABLE system_settings");err!=nil{t.Fatal(err)}
+ // SQLite cannot remove a column on all supported versions; rebuild
+ // precisely the v5 table with its existing data before re-applying v6.
+ if _,err=c.DB.Exec(`CREATE TABLE old_repositories (
+  id TEXT PRIMARY KEY,display_name TEXT NOT NULL UNIQUE,
+  path TEXT NOT NULL UNIQUE,mount_path TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL)`);err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("INSERT INTO old_repositories(id,display_name,path,mount_path,created_at) SELECT id,display_name,path,mount_path,created_at FROM storage_repositories");err!=nil{t.Fatal(err)}
+ // The FK from schedule_repositories references storage_repositories.
+ // Preserve its data by disabling FK checks while doing the schema swap.
+ if _,err=c.DB.Exec("PRAGMA foreign_keys=OFF");err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("DROP TABLE storage_repositories");err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("ALTER TABLE old_repositories RENAME TO storage_repositories");err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("PRAGMA foreign_keys=ON");err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("PRAGMA user_version=5");err!=nil{t.Fatal(err)}
+ if err=c.Close();err!=nil{t.Fatal(err)}
+ upgraded,err:=Open(dir);if err!=nil{t.Fatal(err)}
+ defer upgraded.Close()
+ var count int
+ if err=upgraded.DB.QueryRow("SELECT COUNT(*) FROM storage_repositories WHERE password_mode='password'").Scan(&count);err!=nil||count!=2{t.Fatalf("legacy encrypted repos changed: %d %v",count,err)}
+ var mode string
+ if err=upgraded.DB.QueryRow("SELECT default_repository_password_mode FROM system_settings WHERE singleton=1").Scan(&mode);err!=nil||mode!="password"{t.Fatalf("unsafe default after upgrade: %q %v",mode,err)}
 }

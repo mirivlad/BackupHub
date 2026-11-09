@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import BackupPane from './BackupPane.svelte';
+  import SettingsPane from './SettingsPane.svelte';
 
   type User = { id: string; username: string; role: string };
   type SetupStatus = { setup_required: boolean };
@@ -11,7 +12,7 @@
   type View = 'loading' | 'bootstrap' | 'login' | 'dashboard' | 'error';
 
   let view = $state<View>('loading');
-  let activeTab = $state<'overview' | 'audit' | 'backup'>('overview');
+  let activeTab = $state<'overview' | 'audit' | 'backup' | 'settings'>('overview');
   let busy = $state(false);
   let errorMessage = $state('');
   let notice = $state('');
@@ -28,6 +29,7 @@
     restore_operator: 'Оператор восстановления', auditor: 'Аудитор', viewer: 'Наблюдатель'
   };
   let canAudit = $derived(user?.role === 'administrator' || user?.role === 'auditor');
+  let isAdmin = $derived(user?.role === 'administrator');
 
   function describeError(error: unknown): string {
     if (error instanceof Error) {
@@ -165,10 +167,11 @@
       {#if canAudit}<button class:active={activeTab === 'audit'} class="nav-button" onclick={() => activeTab = 'audit'}>События</button>{/if}
       <div class="side-section">УПРАВЛЕНИЕ</div>
       <button class:active={activeTab === 'backup'} class="nav-button" onclick={() => activeTab = 'backup'}>Хранилища, задания и история</button>
+      {#if isAdmin}<button class:active={activeTab === 'settings'} class="nav-button" onclick={() => activeTab = 'settings'}>Настройки</button>{/if}
       <div class="sidebar-bottom">Предварительная версия · проверьте восстановление до использования</div>
     </aside>
     <div class="content-shell">
-      <header class="topbar"><span class="topbar-title">{activeTab === 'overview' ? 'Обзор системы' : activeTab === 'backup' ? 'Источники и история' : 'Журнал безопасности'}</span><div class="topbar-user"><span>{user?.username} · {roleName[user?.role ?? ''] ?? user?.role}</span><button class="text-button" onclick={() => void logout()} disabled={busy}>Выйти</button></div></header>
+      <header class="topbar"><span class="topbar-title">{activeTab === 'overview' ? 'Обзор системы' : activeTab === 'backup' ? 'Источники и история' : activeTab === 'settings' ? 'Настройки' : 'Журнал безопасности'}</span><div class="topbar-user"><span>{user?.username} · {roleName[user?.role ?? ''] ?? user?.role}</span><button class="text-button" onclick={() => void logout()} disabled={busy}>Выйти</button></div></header>
       <main class="dashboard">
         {#if errorMessage}<p class="error" role="alert">{errorMessage}</p>{/if}
         {#if activeTab === 'overview'}
@@ -183,6 +186,8 @@
           <section class="detail-card"><h2>Рабочие возможности</h2><p class="secondary">В разделе «Источники, история и восстановление» можно создавать задания, просматривать завершённые снимки, скачивать выбранные файлы и папки ZIP и восстанавливать в новый каталог на сервере. PostgreSQL 1С split-config, Active Directory, SMB1, email и полноценная ротация ещё не готовы.</p></section>
         {:else if activeTab === 'backup'}
           <BackupPane role={user?.role ?? ''} />
+        {:else if activeTab === 'settings' && isAdmin}
+          <SettingsPane />
         {:else if canAudit}
           <div class="heading"><div><span class="eyebrow">БЕЗОПАСНОСТЬ</span><h1>Журнал событий</h1><p class="secondary">Последние 20 событий авторизации и администрирования.</p></div><button class="outline" onclick={() => void refreshDashboard()}>Обновить</button></div>
           <section class="detail-card">

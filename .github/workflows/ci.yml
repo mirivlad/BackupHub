@@ -83,12 +83,12 @@ jobs:
           if file dist/backuphub | grep -q 'dynamically linked'; then echo 'DEB binary must not depend on the CI runner glibc'; exit 1; fi
       - name: Create and inspect .deb
         run: |
-          sh packaging/debian/build.sh 0.1.0~preview.2
-          dpkg-deb -c dist/backuphub_0.1.0~preview.2_amd64.deb | grep '/usr/share/backuphub/web/index.html'
-          dpkg-deb -c dist/backuphub_0.1.0~preview.2_amd64.deb | grep '/lib/systemd/system/backuphub.service'
+          sh packaging/debian/build.sh 0.1.0~preview.3
+          dpkg-deb -c dist/backuphub_0.1.0~preview.3_amd64.deb | grep '/usr/share/backuphub/web/index.html'
+          dpkg-deb -c dist/backuphub_0.1.0~preview.3_amd64.deb | grep '/lib/systemd/system/backuphub.service'
       - name: Install Debian package and test HTTPS service
         run: |
-          sudo apt-get install -y ./dist/backuphub_0.1.0~preview.2_amd64.deb
+          sudo apt-get install -y ./dist/backuphub_0.1.0~preview.3_amd64.deb
           # postinst starts the daemon and initializes Restic; do not interrupt it.
           ready=false
           for i in $(seq 1 30); do
@@ -148,6 +148,11 @@ jobs:
           curl -fksS -b "$cookies" "$api/backup/storages/mounts" | python3 -c 'import json,sys;assert isinstance(json.load(sys.stdin)["mounts"],list)'
           unsafe_status="$(curl -ksS -o /tmp/backuphub-unsafe.json -w '%{http_code}' -b "$cookies" "${headers[@]}" -d '{"name":"bad","parent_path":"/etc","folder":"backups"}' "$api/backup/storages")"
           test "$unsafe_status" = "400"
+          # Administrator selects a passwordless default for NEW repositories.
+          result="$(curl -fksS -b "$cookies" "${headers[@]}" -d '{"default_repository_password_mode":"no_password"}' "$api/system/settings")"
+          printf '%s' "$result" | python3 -c 'import json,sys;assert json.load(sys.stdin)["default_repository_password_mode"]=="no_password"'
+          # Legacy primary must remain protected regardless of the new preference.
+          curl -fksS -b "$cookies" "$api/backup/storages" | python3 -c 'import json,sys;a=json.load(sys.stdin)["storages"];assert next(s for s in a if s["id"]=="primary")["password_mode"]=="password"'
           # Prefer actual mounted storage for a second end-to-end round trip.
           repo_id=""
           sudo mkdir -p /mnt/backuphub-ci
@@ -159,6 +164,11 @@ jobs:
               second="$(curl -fksS -b "$cookies" "${headers[@]}" -d '{"name":"CI Disk 2","parent_path":"/mnt/backuphub-ci","folder":"BackupHubCI"}' "$api/backup/storages")"
               repo_id="$(printf '%s' "$second" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')"
               test -n "$repo_id"
+              printf '%s' "$second" | python3 -c 'import json,sys;assert json.load(sys.stdin)["password_mode"]=="no_password"'
+              sudo test ! -e "/var/lib/backuphub/restic-$repo_id.key"
+              # No sqlite database or saved encryption key required for disaster recovery.
+              sudo runuser -u backuphub -- restic --repo /mnt/backuphub-ci/BackupHubCI/repository --insecure-no-password snapshots --json > /tmp/backuphub-passwordless-snapshots.json
+              python3 -c 'import json;assert isinstance(json.load(open("/tmp/backuphub-passwordless-snapshots.json")),list)'
               sudo test "$(stat -c '%a' /mnt/backuphub-ci/BackupHubCI)" = 700
               sudo test "$(stat -c '%U' /mnt/backuphub-ci/BackupHubCI)" = backuphub
               # Switching destinations never moves or deletes an older snapshot.
@@ -178,6 +188,10 @@ jobs:
               printf '%s' "$response" | python3 -c 'import json,sys;a=json.load(sys.stdin)["snapshots"];assert a[0]["repository_id"]!="primary";assert a[1]["repository_id"]=="primary"'
               curl -fksS -b "$cookies" "$api/backup/snapshots/$new_snap/download?mode=single&path=Video%2Fclip.txt" -o /tmp/backuphub-second.txt
               grep -x 'on-second-disk' /tmp/backuphub-second.txt
+              # Offline restore through stock Restic from the repo alone.
+              native="$(sudo runuser -u backuphub -- restic --repo /mnt/backuphub-ci/BackupHubCI/repository --insecure-no-password snapshots --json --tag "bh-source-$source_id" | python3 -c 'import json,sys;a=json.load(sys.stdin);assert len(a)>0;print(a[-1]["id"])')"
+              sudo runuser -u backuphub -- restic --repo /mnt/backuphub-ci/BackupHubCI/repository --insecure-no-password restore "$native" --target /mnt/backuphub-ci/BackupHubCI/restore-smoke
+              sudo grep -rFx 'on-second-disk' /mnt/backuphub-ci/BackupHubCI/restore-smoke
               # Original data is still in the primary repository.
               curl -fksS -b "$cookies" "$api/backup/snapshots/$snapshot/download?mode=single&path=Video%2Fclip.txt" -o /tmp/backuphub-first.txt
               grep -x 'preview-roundtrip' /tmp/backuphub-first.txt
@@ -216,15 +230,15 @@ jobs:
       - name: Verify SHA256 of built Debian artifact
         run: |
           cd release
-          sha256sum -c backuphub_0.1.0~preview.2_amd64.deb.sha256
+          sha256sum -c backuphub_0.1.0~preview.3_amd64.deb.sha256
       - name: Publish immutable prerelease assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.1.0-preview.2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v0.1.0-preview.2 already published; refusing to overwrite release artifacts"
+          if gh release view v0.1.0-preview.3 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.1.0-preview.3 already published; refusing to overwrite release artifacts"
             exit 0
           fi
-          gh release create v0.1.0-preview.2 release/backuphub_0.1.0~preview.2_amd64.deb release/backuphub_0.1.0~preview.2_amd64.deb.sha256 \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.1.0 Preview 2" \
-            --prerelease --notes-file docs/releases/v0.1.0-preview.2.md
+          gh release create v0.1.0-preview.3 release/backuphub_0.1.0~preview.3_amd64.deb release/backuphub_0.1.0~preview.3_amd64.deb.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.1.0 Preview 3" \
+            --prerelease --notes-file docs/releases/v0.1.0-preview.3.md

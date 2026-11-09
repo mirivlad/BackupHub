@@ -1,6 +1,6 @@
-# BackupHub Debian package (v0.1.0 Preview 2)
+# BackupHub Debian package (v0.1.0 Preview 3)
 
-`sudo apt install ./backuphub_0.1.0~preview.2_amd64.deb` creates the
+`sudo apt install ./backuphub_0.1.0~preview.3_amd64.deb` creates the
 dedicated unprivileged system user `backuphub`, initializes state under
 `/var/lib/backuphub`, installs the Go daemon, Svelte UI, an HTTPS service and
 a **separate** root-owned socket-activated `backuphub-storage` helper. Neither
@@ -27,7 +27,7 @@ In the admin UI, open Storage, choose an existing mounted volume under
 `/mnt`, `/media`, `/backup`, `/backup2` or `/srv/backups`. Browse its
 directories, supply a **new subdirectory name** and a friendly storage name.
 The root-only helper creates just that new directory and grants `backuphub`
-access to it; BackupHub initializes a separately encrypted Restic repository.
+access to it; BackupHub initializes a separate Restic repository using the password mode selected in the browser.
 
 Select the destination repository in each backup job. Different jobs can use
 different disks. Switching a job only affects future backups; prior restore
@@ -46,10 +46,22 @@ root:backuphub 0660 Unix socket `/run/backuphub-storage.sock`. It cannot
 delete paths, modify ownership of existing directories or follow symlinks
 while browsing. Only admin sessions may invoke its backend API.
 
-**Back up ALL keys**: `/var/lib/backuphub/master.key`,
-`/var/lib/backuphub/restic.key`, each `restic-<id>.key` plus the SQLite
-catalog and the off-host repository data. Keep offline copies. Losing a key
-makes the corresponding encrypted data unrecoverable.
+New repositories can use **password-protected** (default) or **passwordless**
+Restic; choose the system-wide default on the separate admin Settings screen
+or override the mode while adding a specific storage. Passwordless repositories
+require Restic **0.17 or newer** and can be accessed with
+`restic --repo /mnt/disk/BackupHub/repository --insecure-no-password snapshots`
+without any BackupHub master/key/database. The user must consciously accept
+that anyone with a full disk copy can read these backups. Restic still uses
+its own block format and technically encrypts with the empty password;
+this is NOT a normal directory tree. Existing repositories retain their
+original protected mode without alteration.
+
+**Back up ALL required keys**: `/var/lib/backuphub/master.key`,
+`/var/lib/backuphub/restic.key`, each `restic-<id>.key` **for password-protected storages** plus the SQLite
+catalog and off-host repository data. Passwordless storage has no
+`restic-<id>.key`. Keep offline copies of needed keys. Losing one of
+them renders the corresponding protected backup inaccessible.
 
 ## Source limitations
 
