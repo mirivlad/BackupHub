@@ -14,7 +14,7 @@ import (
  _ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 // Catalog stores operational state; the portable repository manifest must
 // remain sufficient for rebuilding the snapshot index after database loss.
@@ -133,6 +133,17 @@ func migrate(ctx context.Context, db *sql.DB) error {
    `INSERT INTO schedule_repositories(schedule_id,repository_id) SELECT id,'primary' FROM schedule_entries WHERE kind='backup'`,
   }
   for _,statement:=range statements {if _,err=tx.ExecContext(ctx,statement);err!=nil{return fmt.Errorf("v5 storage migration: %w",err)}}
+ }
+ if version<6 {
+  statements:=[]string{
+   `ALTER TABLE storage_repositories ADD COLUMN password_mode TEXT NOT NULL DEFAULT 'password' CHECK(password_mode IN ('password','no_password'))`,
+   `CREATE TABLE system_settings (
+     singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+     default_repository_password_mode TEXT NOT NULL CHECK(default_repository_password_mode IN ('password','no_password'))
+   )`,
+   `INSERT INTO system_settings(singleton,default_repository_password_mode) VALUES(1,'password')`,
+  }
+  for _,statement:=range statements {if _,err=tx.ExecContext(ctx,statement);err!=nil{return fmt.Errorf("v6 repository authentication migration: %w",err)}}
  }
  if _,err=tx.ExecContext(ctx,fmt.Sprintf("PRAGMA user_version=%d",SchemaVersion));err!=nil{return err}
  return tx.Commit()

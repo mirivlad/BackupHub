@@ -1,6 +1,6 @@
 <script lang="ts">
  import {onMount} from 'svelte';
- type Storage={id:string;name:string;path:string;free_bytes:number;status:string};
+ type Storage={id:string;name:string;path:string;free_bytes:number;status:string;password_mode:'password'|'no_password'};
  type Mount={path:string;filesystem:string;free_bytes:number};
  type Entry={name:string;path:string};
  let {onCreated}:{onCreated:()=>Promise<void>}=$props();
@@ -12,6 +12,7 @@
  let storageName=$state('');
  let folder=$state('BackupHub');
  let useExisting=$state(false);
+ let passwordMode=$state<'password'|'no_password'>('password');
  let busy=$state(false);
  let error=$state('');
  let notice=$state('');
@@ -26,8 +27,9 @@
  async function load(){
   busy=true;error='';
   try{
-   const [a,b]=await Promise.all([request<{storages:Storage[]}>('/storages'),request<{mounts:Mount[]}>('/storages/mounts')]);
-   storages=a.storages;mounts=b.mounts;
+   const [a,b,settings]=await Promise.all([request<{storages:Storage[]}>('/storages'),request<{mounts:Mount[]}>('/storages/mounts'),
+    fetch('/api/v1/system/settings',{credentials:'same-origin'}).then(async response=>{const data=await response.json();if(!response.ok)throw new Error(data.error??'Настройки недоступны');return data as {default_repository_password_mode:'password'|'no_password'}})]);
+   storages=a.storages;mounts=b.mounts;passwordMode=settings.default_repository_password_mode;
   }catch(e){error=e instanceof Error?e.message:'Список дисков недоступен';}
   finally{busy=false;}
  }
@@ -43,7 +45,7 @@
  async function create(){
   busy=true;error='';notice='';
   try{
-   const created=await request<Storage>('/storages',{method:'POST',headers:{'Content-Type':'application/json','X-BackupHub-CSRF':csrf()},body:JSON.stringify({name:storageName,parent_path:chosen,folder:useExisting?'':folder})});
+   const created=await request<Storage>('/storages',{method:'POST',headers:{'Content-Type':'application/json','X-BackupHub-CSRF':csrf()},body:JSON.stringify({name:storageName,parent_path:chosen,folder:useExisting?'':folder,password_mode:passwordMode})});
    notice='Хранилище «'+created.name+'» подключено: '+created.path;
    storageName='';folder='BackupHub';useExisting=false;
    await load();await onCreated();
@@ -60,12 +62,12 @@
  onMount(()=>{void load();});
 </script>
 <section class="detail-card">
- <div class="storage-heading"><div><h2>Хранилища резервных копий</h2><p class="secondary">Каждый путь — отдельный зашифрованный Restic-репозиторий. У каждого задания своё хранилище.</p></div><button class="outline" onclick={()=>void load()} disabled={busy}>Обновить диски</button></div>
+ <div class="storage-heading"><div><h2>Хранилища резервных копий</h2><p class="secondary">Каждый путь — отдельный Restic-репозиторий. Защита паролем выбирается при создании. У каждого задания своё хранилище.</p></div><button class="outline" onclick={()=>void load()} disabled={busy}>Обновить диски</button></div>
  {#if error}<p class="error" role="alert">{error}</p>{/if}
  {#if notice}<p class="notice" role="status">{notice}</p>{/if}
  <div class="storage-grid">
   {#each storages as s (s.id)}
-   <div class="storage-item"><strong>{s.name}</strong><code>{s.path}</code><small>{s.status==='available'?'Доступно · свободно '+gb(s.free_bytes):'Недоступно — задания будут завершаться ошибкой'}</small>{#if s.id==='primary'}<small>Встроенное хранилище для совместимости</small>{/if}</div>
+   <div class="storage-item"><strong>{s.name}</strong><code>{s.path}</code><small>{s.status==='available'?'Доступно · свободно '+gb(s.free_bytes):'Недоступно — задания будут завершаться ошибкой'}</small><small>{s.password_mode==='no_password'?'Без пароля':'С паролем (нужен ключ)'}</small>{#if s.id==='primary'}<small>Встроенное хранилище для совместимости</small>{/if}</div>
   {/each}
  </div>
  <h3>Добавить новое хранилище</h3>
@@ -89,6 +91,11 @@
     </div>
     <form class="storage-form" onsubmit={(event)=>{event.preventDefault();void create();}}>
      <label>Название хранилища<input required maxlength="120" bind:value={storageName} placeholder="Архив на диске 1"/></label>
+     <label>Защита архива<select bind:value={passwordMode} disabled={busy}>
+      <option value="password">С паролем (сохраните ключ восстановления)</option>
+      <option value="no_password">Без пароля (достаточно диска с архивом)</option>
+     </select></label>
+     {#if passwordMode==='no_password'}<p class="secondary storage-info">Без пароля: любой, у кого есть доступ к диску, сможет читать этот архив через Restic. В дальнейшем режим репозитория не меняется.</p>{/if}
      <label class="storage-checkbox"><input type="checkbox" bind:checked={useExisting}/> Использовать выбранную папку без создания новой (только если она уже принадлежит backuphub и имеет права 0700)</label>
      {#if !useExisting}
       <label>Новая папка<input required minlength="1" maxlength="64" bind:value={folder}/></label>
@@ -106,5 +113,5 @@
  .mount-list{display:flex;gap:9px;flex-wrap:wrap}.mount-list button{white-space:normal;text-align:left}
  .storage-browser{margin-top:14px;border:1px solid #405474;border-radius:9px;padding:14px}.storage-folders{display:flex;gap:8px;flex-wrap:wrap;max-height:210px;overflow:auto;margin-bottom:14px}
  .storage-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;align-items:end}
- .storage-form label{display:grid;gap:6px}.storage-checkbox{grid-column:1/-1;display:flex!important;flex-direction:row;align-items:center}.storage-checkbox input{width:auto!important}.storage-form input{background:#172338;color:#eee;border:1px solid #405474;border-radius:7px;padding:10px;min-width:0;width:100%}
+ .storage-form label{display:grid;gap:6px}.storage-info{grid-column:1/-1}.storage-checkbox{grid-column:1/-1;display:flex!important;flex-direction:row;align-items:center}.storage-checkbox input{width:auto!important}.storage-form input,.storage-form select{background:#172338;color:#eee;border:1px solid #405474;border-radius:7px;padding:10px;min-width:0;width:100%}
 </style>
