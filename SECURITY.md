@@ -30,3 +30,17 @@ The full threat model of arbitrary mount replacements, NAS filesystem ACLs,
 cross-volume recovery, storage retention and privilege boundaries has **not**
 yet been accepted on all target Debian distributions. Install Preview 2 first
 on a test host and keep independent backups of Restic keys and metadata.
+
+## Passwordless Restic (Preview 3)
+
+The administrator can select `no_password` for a **new** repository, or
+make that the default for new storages. In this mode every Restic operation
+uses `--insecure-no-password` and the system intentionally creates no
+external repository password file. It is **not plaintext**: Restic still uses
+its encrypted object format with an empty password, which is not a security
+barrier. Anyone with an intact copy of that repository can read its data.
+The service never automatically downgrades an existing protected repository.
+The metadata schema assigns `password` to all pre-existing storages;
+unknown modes are rejected, not interpreted as passwordless.
+The administrator-only settings endpoint enforces session authentication,
+CSRF protection on changes and audit logging.

@@ -82,6 +82,7 @@ func TestV4ToV5PreservesBackupScheduleDestination(t *testing.T){
  if err!=nil{t.Fatal(err)}
  _,err=c.DB.Exec("INSERT INTO schedule_entries(id,dataset_id,kind,interval_seconds,next_run_unix,enabled,created_at) VALUES('schedule-v4','source-v4','backup',3600,100,1,'2026-11-01T00:00:00Z')")
  if err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("DROP TABLE system_settings");err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("DROP TABLE schedule_repositories");err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("DROP TABLE storage_repositories");err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("PRAGMA user_version=4");err!=nil{t.Fatal(err)}
