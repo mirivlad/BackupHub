@@ -226,5 +226,5 @@ jobs:
             exit 0
           fi
           gh release create v0.1.0-preview.2 release/backuphub_0.1.0~preview.2_amd64.deb release/backuphub_0.1.0~preview.2_amd64.deb.sha256 \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.1.0 Preview 1" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.1.0 Preview 2" \
             --prerelease --notes-file docs/releases/v0.1.0-preview.2.md
