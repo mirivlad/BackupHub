@@ -10,6 +10,7 @@ import (
 	"github.com/mirivlad/BackupHub/internal/vault"
 	"log/slog"
 	"os"
+ "os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -90,12 +91,34 @@ func New(ctx context.Context, c *catalog.Catalog, v *vault.Vault, repoPath, stag
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
 		return nil, errors.New("staging directory must be private and real")
 	}
-	repo, err := initRepository(ctx, c.DataDir, repoPath)
-	if err != nil {
-		return nil, err
-	}
-
- if err=ensurePrimaryStorage(ctx,c,repo.path);err!=nil{return nil,err}
+	// A newly restored catalog may refer to the old primary disk, which
+ // can be physically gone. Never create a replacement Restic repository
+ // using an existing recovery key: start in degraded recovery mode instead.
+ var storedPrimary string
+ if err:=c.DB.QueryRowContext(ctx,"SELECT path FROM storage_repositories WHERE id='primary'").Scan(&storedPrimary);err!=nil{return nil,err}
+ if storedPrimary!=""{
+  if repoPath!=""&&filepath.Clean(repoPath)!=storedPrimary{return nil,errors.New("configured primary repository differs from recovery catalog")}
+  repoPath=storedPrimary
+ }
+ if repoPath==""{repoPath=filepath.Join(c.DataDir,"repository")}
+ missingPrimary:=false
+ if storedPrimary!="" {
+  if _,err:=os.Lstat(filepath.Join(repoPath,"config"));os.IsNotExist(err){missingPrimary=true}else if err!=nil{return nil,err}
+ }
+ var repo *repository
+ if missingPrimary {
+  key:=filepath.Join(c.DataDir,"restic.key")
+  keyInfo,err:=os.Lstat(key)
+  if err!=nil||!keyInfo.Mode().IsRegular()||keyInfo.Mode().Perm()&0077!=0{return nil,errors.New("primary Restic key unavailable during recovery")}
+  binary,err:=exec.LookPath("restic");if err!=nil{return nil,err}
+  repo=&repository{binary:binary,path:repoPath,passwordFile:key,passwordMode:PasswordMode}
+  slog.Warn("primary repository missing; backup server started in degraded recovery mode","path",repoPath)
+ }else{
+  var err error
+  repo,err=initRepository(ctx,c.DataDir,repoPath)
+  if err!=nil{return nil,err}
+ }
+ if err:=ensurePrimaryStorage(ctx,c,repo.path);err!=nil{return nil,err}
  svc := &Service{catalog: c, vault: v, repo: repo, stageDir: stageDir, wake: make(chan struct{}, 1)}
 	svc.scheduler = scheduler.New(c, svc)
 	return svc, nil

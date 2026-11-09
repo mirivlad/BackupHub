@@ -44,3 +44,40 @@ The metadata schema assigns `password` to all pre-existing storages;
 unknown modes are rejected, not interpreted as passwordless.
 The administrator-only settings endpoint enforces session authentication,
 CSRF protection on changes and audit logging.
+
+## Recovery Kit and offline import (Preview 4)
+
+The admin-only `/api/v1/system/recovery-kit` endpoint exports a consistent
+SQLite snapshot with Vault master and repository keys over authenticated HTTPS.
+**The ZIP itself is not encrypted**, contains highly sensitive key material
+and must never be shared publicly. It is audited and sent with no-cache headers.
+Offline kit restore refuses any existing destination, enforces strict file
+names, modes, size limits, manifest identity and SQLite integrity.
+A mounted Restic archive can be read back independently from its portable
+commit markers. The import never runs Restic init/forget/prune and never
+recreates a missing disk. Imported historical sources have **no fabricated
+credentials or runnable schedules**.
+
+## Browser Recovery Kit import and atomic activation
+
+Only an authenticated administrator with a valid CSRF token and an explicit
+replacement confirmation can upload a Recovery Kit, and only when the new
+installation has no sources, jobs, snapshots, extra repositories or vault
+secrets. Multipart data is capped at 256 MiB, is spooled to private mode-0600
+files and is validated before an activation marker is published.
+
+The new state is prepared in a 0700 directory. Before activation, existing
+sessions/bootstrap tokens are deleted and all recovered schedules are paused.
+The running service never swaps open SQLite files. A supervised systemd
+restart invokes a narrowly scoped root-only ExecStartPre operation which
+validates the prepared catalog then uses Linux RENAME_EXCHANGE to atomically
+replace the empty installation. A sibling rollback copy is retained. This
+requires an appropriate Linux filesystem with renameat2 support.
+Unexpected entries, corrupted SQLite, non-empty destinations and malformed
+kits fail closed. The original ZIP must be kept securely off-server: the
+prepared staging archive is deleted once the files are extracted.
+
+Repository relinking at new mount locations requires matching every historical
+Restic commit marker and data-snapshot ID. An empty repository cannot be
+relinked without verifiable history. Nothing in this operation runs Restic
+init, forget or prune.

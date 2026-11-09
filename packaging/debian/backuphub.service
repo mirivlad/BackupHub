@@ -9,7 +9,11 @@ Type=simple
 User=backuphub
 Group=backuphub
 UMask=0077
+Environment=BACKUPHUB_RECOVERY_AUTORESTART=1
 EnvironmentFile=-/etc/backuphub/backuphub.env
+# Only this one-shot prestart operation runs with root privileges. It exchanges
+# two prevalidated private state directories atomically, never live SQLite.
+ExecStartPre=+/usr/bin/backuphub recovery-kit-apply -data-dir /var/lib/backuphub
 ExecStart=/usr/bin/backuphub serve -data-dir /var/lib/backuphub -ui-dir /usr/share/backuphub/web -listen 0.0.0.0:8443 -tls-cert /etc/backuphub/server.crt -tls-key /etc/backuphub/server.key
 Restart=on-failure
 RestartSec=10s
