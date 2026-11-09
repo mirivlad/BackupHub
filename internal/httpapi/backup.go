@@ -52,6 +52,24 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			}
 			jsonResponse(w, 200, map[string]any{"engine": "restic", "connected": true, "supported_sources": []string{"local", "smb", "sftp", "postgres"}, "production_ready": false})
 			return
+		case "storages":
+			switch r.Method {
+			case http.MethodGet:
+				storages,err:=s.backup.ListStorages(r.Context())
+				if err!=nil{fail(err);return}
+				jsonResponse(w,200,map[string]any{"storages":storages})
+			case http.MethodPost:
+				if !isAdmin{jsonResponse(w,403,map[string]string{"error":"administrator required"});return}
+				var payload backup.CreateStorage
+				if !decode(w,r,&payload){return}
+				storage,err:=s.backup.ProvisionStorage(r.Context(),payload)
+				if err!=nil{slog.Warn("storage provisioning failed","error",err);fail(err);return}
+				s.backup.Audit(r.Context(),user.ID,"storage.created",storage.ID)
+				jsonResponse(w,201,storage)
+			default:
+				method(w,r,http.MethodGet)
+			}
+			return
 		case "sources":
 			switch r.Method {
 			case http.MethodGet:
@@ -105,6 +123,23 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if len(path)==2&&path[0]=="storages"{
+		if !isAdmin{jsonResponse(w,403,map[string]string{"error":"administrator required"});return}
+		if !method(w,r,http.MethodGet){return}
+		switch path[1]{
+		case "mounts":
+			mounts,err:=s.backup.StorageMounts(r.Context())
+			if err!=nil{fail(err);return}
+			jsonResponse(w,200,map[string]any{"mounts":mounts})
+		case "browse":
+			entries,err:=s.backup.BrowseStorage(r.Context(),r.URL.Query().Get("path"))
+			if err!=nil{fail(err);return}
+			jsonResponse(w,200,map[string]any{"entries":entries})
+		default:
+			jsonResponse(w,404,map[string]string{"error":"unknown storage operation"})
+		}
+		return
+	}
 	if len(path) == 3 && path[0] == "sources" {
 		id, operation := path[1], path[2]
 		if !canBackup || r.Method != http.MethodPost {
@@ -112,6 +147,13 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		switch operation {
+		case "storage":
+			if !isAdmin{jsonResponse(w,403,map[string]string{"error":"admin required"});return}
+			var req struct{RepositoryID string `json:"repository_id"`}
+			if !decode(w,r,&req){return}
+			if err:=s.backup.SelectSourceStorage(r.Context(),id,req.RepositoryID);err!=nil{fail(err);return}
+			s.backup.Audit(r.Context(),user.ID,"source.storage_changed",id)
+			jsonResponse(w,200,map[string]string{"repository_id":req.RepositoryID})
 		case "run":
 			if err := s.backup.Manual(r.Context(), id); err != nil {
 				fail(err)

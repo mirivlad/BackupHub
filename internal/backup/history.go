@@ -14,7 +14,7 @@ import (
 )
 
 func (s *Service) ListSnapshots(ctx context.Context, sourceID string) ([]Snapshot, error) {
-	query := `SELECT f.snapshot_id,f.source_id,s.display_name,s.kind,f.restic_id,f.root_path,f.committed_at,f.verification,f.fidelity,f.consistency FROM file_snapshots f JOIN sources s ON f.source_id=s.id`
+	query := `SELECT f.snapshot_id,f.source_id,s.display_name,s.kind,f.restic_id,f.root_path,f.committed_at,f.verification,f.fidelity,f.consistency,sp.repository_id FROM file_snapshots f JOIN sources s ON f.source_id=s.id JOIN snapshots sp ON sp.id=f.snapshot_id`
 	args := []any{}
 	if sourceID != "" {
 		if !safeID(sourceID) {
@@ -32,7 +32,7 @@ func (s *Service) ListSnapshots(ctx context.Context, sourceID string) ([]Snapsho
 	snaps := []Snapshot{}
 	for rows.Next() {
 		var v Snapshot
-		if err = rows.Scan(&v.ID, &v.SourceID, &v.SourceName, &v.Kind, &v.ResticID, &v.Root, &v.At, &v.Verification, &v.Fidelity, &v.Consistency); err != nil {
+		if err = rows.Scan(&v.ID, &v.SourceID, &v.SourceName, &v.Kind, &v.ResticID, &v.Root, &v.At, &v.Verification, &v.Fidelity, &v.Consistency,&v.RepositoryID); err != nil {
 			return nil, err
 		}
 		snaps = append(snaps, v)
@@ -44,7 +44,7 @@ func (s *Service) snapshot(ctx context.Context, id string) (Snapshot, error) {
 	if !safeID(id) {
 		return snap, errors.New("invalid snapshot ID")
 	}
-	err := s.catalog.DB.QueryRowContext(ctx, `SELECT f.snapshot_id,f.source_id,s.display_name,s.kind,f.restic_id,f.root_path,f.committed_at,f.verification,f.fidelity,f.consistency FROM file_snapshots f JOIN sources s ON f.source_id=s.id WHERE f.snapshot_id=?`, id).Scan(&snap.ID, &snap.SourceID, &snap.SourceName, &snap.Kind, &snap.ResticID, &snap.Root, &snap.At, &snap.Verification, &snap.Fidelity, &snap.Consistency)
+	err := s.catalog.DB.QueryRowContext(ctx, `SELECT f.snapshot_id,f.source_id,s.display_name,s.kind,f.restic_id,f.root_path,f.committed_at,f.verification,f.fidelity,f.consistency,sp.repository_id FROM file_snapshots f JOIN sources s ON f.source_id=s.id JOIN snapshots sp ON sp.id=f.snapshot_id WHERE f.snapshot_id=?`, id).Scan(&snap.ID, &snap.SourceID, &snap.SourceName, &snap.Kind, &snap.ResticID, &snap.Root, &snap.At, &snap.Verification, &snap.Fidelity, &snap.Consistency,&snap.RepositoryID)
 	return snap, err
 }
 func (s *Service) Files(ctx context.Context, id string) ([]File, error) {
@@ -52,7 +52,9 @@ func (s *Service) Files(ctx context.Context, id string) ([]File, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := s.repo.listTree(ctx, snap.ResticID)
+	repo,err:=s.repositoryFor(ctx,snap.RepositoryID)
+ if err!=nil{return nil,err}
+ entries, err := repo.listTree(ctx, snap.ResticID)
 	if err != nil {
 		return nil, err
 	}
@@ -76,11 +78,13 @@ func (s *Service) Download(ctx context.Context, id string, selections []string, 
 	if err != nil {
 		return err
 	}
-	if single {
+	repo,err:=s.repositoryFor(ctx,snap.RepositoryID)
+ if err!=nil{return err}
+ if single {
 		if len(selections) != 1 {
 			return errors.New("single download requires exactly one path")
 		}
-		return s.repo.downloadSingle(ctx, snap.ResticID, snap.Root, selections[0], w)
+		return repo.downloadSingle(ctx, snap.ResticID, snap.Root, selections[0], w)
 	}
 	if len(selections) > 64 {
 		return errors.New("too many selections")
@@ -89,7 +93,7 @@ func (s *Service) Download(ctx context.Context, id string, selections []string, 
 	// archive members come from one immutable Restic snapshot.
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", snap.ID+".zip"))
-	return s.repo.zipSelection(ctx, snap.ResticID, snap.Root, selections, w)
+	return repo.zipSelection(ctx, snap.ResticID, snap.Root, selections, w)
 }
 func (s *Service) Audit(ctx context.Context, actor, action, resource string) {
 	_, err := s.catalog.DB.ExecContext(ctx, `INSERT INTO audit_events(occurred_at,actor,action,resource,metadata_json) VALUES(?,?,?,?,?)`, time.Now().UTC().Format(time.RFC3339Nano), actor, action, resource, `{}`)

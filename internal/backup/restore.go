@@ -32,7 +32,9 @@ func (s *Service) RestoreToNewDirectory(ctx context.Context, id string, selectio
 	if len(requested) == 0 {
 		requested["."] = true
 	}
-	entries, err := s.repo.listTree(ctx, snap.ResticID)
+	repo,err:=s.repositoryFor(ctx,snap.RepositoryID)
+ if err!=nil{return "",err}
+ entries, err := repo.listTree(ctx, snap.ResticID)
 	if err != nil {
 		return "", err
 	}
@@ -87,7 +89,7 @@ func (s *Service) RestoreToNewDirectory(ctx context.Context, id string, selectio
 		if err != nil {
 			return "", err
 		}
-		dumpErr := s.repo.dumpFile(ctx, snap.ResticID, entry.Path, f)
+		dumpErr := repo.dumpFile(ctx, snap.ResticID, entry.Path, f)
 		syncErr := f.Sync()
 		closeErr := f.Close()
 		if dumpErr != nil {

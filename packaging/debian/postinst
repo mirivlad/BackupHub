@@ -25,6 +25,7 @@ case "${1:-}" in
   fi
   if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload || true
+    systemctl enable --now backuphub-storage.socket >/dev/null || true
     systemctl enable backuphub.service >/dev/null || true
     systemctl restart backuphub.service || true
   fi

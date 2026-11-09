@@ -17,6 +17,7 @@ import (
  "github.com/mirivlad/BackupHub/internal/catalog"
  "github.com/mirivlad/BackupHub/internal/httpapi"
  "github.com/mirivlad/BackupHub/internal/vault"
+ "github.com/mirivlad/BackupHub/internal/storagehelper"
 )
 
 func main(){
@@ -29,6 +30,12 @@ func main(){
 }
 
 func run(args []string)error{
+ if len(args)>0&&args[0]=="storage-helper"{
+  if len(args)!=1{return fmt.Errorf("storage-helper takes no arguments")}
+  signals,stop:=signal.NotifyContext(context.Background(),os.Interrupt,syscall.SIGTERM)
+  defer stop()
+  return storagehelper.ServeActivated(signals)
+ }
  command:="serve"
  if len(args)>0 {
   switch args[0] {

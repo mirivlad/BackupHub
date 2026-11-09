@@ -5,6 +5,8 @@ case "${1:-}" in
   if command -v systemctl >/dev/null 2>&1; then
     systemctl stop backuphub.service >/dev/null 2>&1 || true
     systemctl disable backuphub.service >/dev/null 2>&1 || true
+    systemctl stop backuphub-storage.socket backuphub-storage.service >/dev/null 2>&1 || true
+    systemctl disable backuphub-storage.socket >/dev/null 2>&1 || true
   fi
  ;;
 esac

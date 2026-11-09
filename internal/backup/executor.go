@@ -16,9 +16,11 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if err != nil {
 		return err
 	}
-	if t.Kind != "backup" {
-		return errors.New("unsupported executor kind")
-	}
+	if t.Kind != "backup" {return errors.New("unsupported executor kind")}
+ repoID,err:=s.sourceRepository(ctx,source.ID)
+ if err!=nil{return fmt.Errorf("missing destination storage: %w",err)}
+ destination,err:=s.repositoryFor(ctx,repoID)
+ if err!=nil{return fmt.Errorf("%w: storage offline",scheduler.ErrSourceUnavailable)}
 	if source.Kind == "local" {
 		info, err := os.Lstat(settings.Path)
 		if err != nil {
@@ -54,11 +56,11 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if err = report(domain.JobCommitting); err != nil {
 		return err
 	}
-	native, err := s.repo.treeBackup(ctx, root, source.ID)
+	native, err := destination.treeBackup(ctx, root, source.ID)
 	if err != nil {
 		return err
 	}
-	if err = s.repo.check(ctx, true); err != nil {
+	if err = destination.check(ctx, true); err != nil {
 		return fmt.Errorf("restic full data verification failed: %w", err)
 	}
 	id, err := randomID()
@@ -76,7 +78,7 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 		fidelity = "content_and_timestamps"
 	}
 	marker := portableRecord{ID: id, SourceID: source.ID, SourceName: source.Name, Kind: source.Kind, Root: root, ResticID: native, At: at, DataVerified: true, Consistency: consistency, Fidelity: fidelity}
-	markerID, err := s.repo.commit(ctx, marker)
+	markerID, err := destination.commit(ctx, marker)
 	if err != nil {
 		return err
 	}
@@ -85,7 +87,7 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO snapshots(id,dataset_id,repository_id,state,manifest_ref,created_at) VALUES(?,?,?,?,?,?)`, id, source.ID, "primary", "committed", markerID, at)
+	_, err = tx.ExecContext(ctx, `INSERT INTO snapshots(id,dataset_id,repository_id,state,manifest_ref,created_at) VALUES(?,?,?,?,?,?)`, id, source.ID, repoID, "committed", markerID, at)
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `INSERT INTO file_snapshots(snapshot_id,source_id,restic_id,root_path,committed_at,verification,fidelity,consistency) VALUES(?,?,?,?,?,?,?,?)`, id, source.ID, native, root, at, "data_sha256_verified", fidelity, consistency)
 	}

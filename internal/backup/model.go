@@ -25,6 +25,7 @@ type CreateSource struct {
 	Password        string `json:"password"`
 	Database        string `json:"database"`
 	IntervalMinutes int    `json:"interval_minutes"`
+	RepositoryID string `json:"repository_id"`
 }
 type Settings struct{ Host, Share, Path, Username, Database string }
 type Source struct {
@@ -41,6 +42,7 @@ type Source struct {
 	Enabled         bool   `json:"enabled"`
 }
 type Snapshot struct {
+	RepositoryID string `json:"repository_id"`
 	ID           string `json:"id"`
 	SourceID     string `json:"source_id"`
 	SourceName   string `json:"source_name"`
@@ -63,6 +65,7 @@ type Service struct {
 	catalog   *catalog.Catalog
 	vault     *vault.Vault
 	repo      *repository
+	repoMu sync.Mutex
 	scheduler *scheduler.Scheduler
 	stageDir  string
 	wake      chan struct{}
@@ -90,7 +93,9 @@ func New(ctx context.Context, c *catalog.Catalog, v *vault.Vault, repoPath, stag
 	if err != nil {
 		return nil, err
 	}
-	svc := &Service{catalog: c, vault: v, repo: repo, stageDir: stageDir, wake: make(chan struct{}, 1)}
+
+ if err=ensurePrimaryStorage(ctx,c,repo.path);err!=nil{return nil,err}
+ svc := &Service{catalog: c, vault: v, repo: repo, stageDir: stageDir, wake: make(chan struct{}, 1)}
 	svc.scheduler = scheduler.New(c, svc)
 	return svc, nil
 }
