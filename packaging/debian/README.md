@@ -53,8 +53,7 @@ makes the corresponding encrypted data unrecoverable.
 
 ## Source limitations
 
-SMB2/3 and SFTP captures stage the **entire remote dataset** in
-`/var/lib/backuphub/staging` before Restic can deduplicate and encrypt it.
+SMB2/3 and SFTP captures stage the **entire remote dataset** on the **selected backup volume** (under its private `staging/` folder) before Restic can deduplicate and encrypt it. The legacy `primary` storage stages under `/var/lib/backuphub/staging`.
 Ensure enough temporary space. Do not select BackupHub's own state/repository
 as a source. SFTP host key verification requires a trusted
 `/etc/backuphub/known_hosts`. SMB1 is unsupported. PostgreSQL uses custom
