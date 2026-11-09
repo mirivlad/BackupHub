@@ -49,7 +49,7 @@
     try{
       const result=await api<Source>('/sources',jsonBody(form));
       message=`Источник «${result.name}» создан. Копирование по расписанию начнётся после наступления времени задания.`;
-      form={name:'',kind:'smb',host:'',share:'',path:'',username:'',password:'',database:'',interval_minutes:1440};
+      form={name:'',kind:'smb',host:'',share:'',path:'',username:'',password:'',database:'',interval_minutes:1440,repository_id:'primary'};
       editor=false;await refresh();
     }catch(e){error=e instanceof Error?e.message:'Не удалось добавить источник';}
     finally{busy=false;}

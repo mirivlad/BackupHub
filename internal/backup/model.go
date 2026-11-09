@@ -38,6 +38,7 @@ type Source struct {
 	Username        string `json:"username"`
 	Database        string `json:"database"`
 	IntervalMinutes int    `json:"interval_minutes"`
+	RepositoryID string `json:"repository_id"`
 	NextRun         string `json:"next_run,omitempty"`
 	Enabled         bool   `json:"enabled"`
 }
