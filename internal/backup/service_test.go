@@ -262,11 +262,20 @@ func TestPasswordlessStorageSurvivesLossOfBackupHubState(t *testing.T){
  if len(items)!=2||items[1].PasswordMode!=NoPasswordMode{t.Fatalf("incorrect mode in storage list: %+v",items)}
  sourcePath:=privateDir(t)
  if err=os.WriteFile(filepath.Join(sourcePath,"recovery.txt"),[]byte("survived disaster"),0600);err!=nil{t.Fatal(err)}
- src,err:=svc.Create(ctx,CreateSource{Name:"Emergency recovery",Kind:"local",Path:sourcePath,IntervalMinutes:60,RepositoryID:open.ID})
+ src,err:=svc.Create(ctx,CreateSource{Name:"Emergency recovery",Kind:"local",Path:sourcePath,IntervalMinutes:60,RepositoryID:PrimaryStorageID})
  if err!=nil{t.Fatal(err)}
  if err=svc.Manual(ctx,src.ID);err!=nil{t.Fatal(err)}
- if ran,err:=svc.scheduler.RunDue(ctx);err!=nil||!ran{t.Fatalf("run failed %v %v",ran,err)}
- snaps,err:=svc.ListSnapshots(ctx,src.ID);if err!=nil||len(snaps)!=1{t.Fatalf("snapshots: %v %v",snaps,err)}
+ if ran,err:=svc.scheduler.RunDue(ctx);err!=nil||!ran{t.Fatalf("protected run failed %v %v",ran,err)}
+ if err=svc.SelectSourceStorage(ctx,src.ID,open.ID);err!=nil{t.Fatal(err)}
+ if err=svc.Manual(ctx,src.ID);err!=nil{t.Fatal(err)}
+ if ran,err:=svc.scheduler.RunDue(ctx);err!=nil||!ran{t.Fatalf("passwordless run failed %v %v",ran,err)}
+ snaps,err:=svc.ListSnapshots(ctx,src.ID);if err!=nil||len(snaps)!=2{t.Fatalf("snapshots: %v %v",snaps,err)}
+ if snaps[0].RepositoryID!=open.ID||snaps[1].RepositoryID!=PrimaryStorageID{t.Fatalf("historical repositories confused: %+v",snaps)}
+ for _,snap:=range snaps{
+  recorder:=httptest.NewRecorder()
+  if err:=svc.Download(ctx,snap.ID,[]string{"recovery.txt"},true,recorder);err!=nil{t.Fatal(err)}
+  if recorder.Body.String()!="survived disaster"{t.Fatalf("failed downloading from %s",snap.RepositoryID)}
+ }
  // The repo can be read with only Restic and the disk; not even the
  // BackupHub catalog or any master/repository key is available here.
  read:=exec.CommandContext(ctx,"restic","--repo",repoPath,"--insecure-no-password","snapshots","--json")
