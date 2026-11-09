@@ -247,5 +247,8 @@ func publicError(err error) string {
 	if errors.Is(err, sql.ErrNoRows) {
 		return "resource not found"
 	}
+ if errors.Is(err,backup.ErrPasswordlessResticUnsupported){
+  return "Для хранения без пароля нужен Restic версии 0.17.0 или новее"
+ }
 	return "operation rejected or failed; consult server journal for details"
 }

@@ -21,7 +21,7 @@ func (s *Server) systemSettings(w http.ResponseWriter,r *http.Request){
   var req struct{Mode string `json:"default_repository_password_mode"`}
   if !decode(w,r,&req){return}
   if err:=s.backup.SetDefaultRepositoryPasswordMode(r.Context(),req.Mode);err!=nil{
-   jsonResponse(w,400,map[string]string{"error":"invalid repository password mode"});return
+   jsonResponse(w,400,map[string]string{"error":publicError(err)});return
   }
   s.backup.Audit(r.Context(),user.ID,"system.default_storage_mode_changed",req.Mode)
   jsonResponse(w,200,map[string]string{"default_repository_password_mode":req.Mode})

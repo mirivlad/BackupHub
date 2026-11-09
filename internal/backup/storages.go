@@ -198,6 +198,9 @@ func (s *Service) DefaultRepositoryPasswordMode(ctx context.Context)(string,erro
 // the key policy of an existing repository or an existing snapshot.
 func (s *Service) SetDefaultRepositoryPasswordMode(ctx context.Context,mode string)error{
  if !validPasswordMode(mode){return errors.New("invalid default repository password mode")}
+ if mode==NoPasswordMode {
+  if err:=checkPasswordlessRestic(ctx,s.repo.binary);err!=nil{return err}
+ }
  result,err:=s.catalog.DB.ExecContext(ctx,"UPDATE system_settings SET default_repository_password_mode=? WHERE singleton=1",mode)
  if err!=nil{return err}
  count,err:=result.RowsAffected();if err!=nil{return err}

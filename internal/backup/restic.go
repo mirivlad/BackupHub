@@ -32,10 +32,12 @@ func validPasswordMode(mode string) bool {return mode==PasswordMode || mode==NoP
 
 // Restic 0.17.0 introduced this global option. Reject unsupported versions
 // before preparing a passwordless repository, never create a mixed-mode repo.
+var ErrPasswordlessResticUnsupported=errors.New("passwordless storage requires restic 0.17.0 or newer")
+
 func checkPasswordlessRestic(ctx context.Context,binary string)error{
  cmd:=exec.CommandContext(ctx,binary,"--insecure-no-password","version")
  cmd.Env=[]string{"PATH="+os.Getenv("PATH"),"HOME="+os.Getenv("HOME"),"LANG=C"}
- if err:=cmd.Run();err!=nil{return fmt.Errorf("passwordless storage needs restic >= 0.17.0: %w",err)}
+ if err:=cmd.Run();err!=nil{return fmt.Errorf("%w: %v",ErrPasswordlessResticUnsupported,err)}
  return nil
 }
 
