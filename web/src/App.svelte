@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import BackupPane from './BackupPane.svelte';
 
   type User = { id: string; username: string; role: string };
   type SetupStatus = { setup_required: boolean };
@@ -10,7 +11,7 @@
   type View = 'loading' | 'bootstrap' | 'login' | 'dashboard' | 'error';
 
   let view = $state<View>('loading');
-  let activeTab = $state<'overview' | 'audit'>('overview');
+  let activeTab = $state<'overview' | 'audit' | 'backup'>('overview');
   let busy = $state(false);
   let errorMessage = $state('');
   let notice = $state('');
@@ -163,26 +164,26 @@
       <button class:active={activeTab === 'overview'} class="nav-button" onclick={() => activeTab = 'overview'}>Обзор</button>
       {#if canAudit}<button class:active={activeTab === 'audit'} class="nav-button" onclick={() => activeTab = 'audit'}>События</button>{/if}
       <div class="side-section">УПРАВЛЕНИЕ</div>
-      <div class="inactive-link">Источники <span>Позже</span></div>
-      <div class="inactive-link">Задания <span>Позже</span></div>
-      <div class="inactive-link">История и восстановление <span>Позже</span></div>
+      <button class:active={activeTab === 'backup'} class="nav-button" onclick={() => activeTab = 'backup'}>Источники, история и восстановление</button>
       <div class="inactive-link">Хранилища <span>Позже</span></div>
-      <div class="sidebar-bottom">Ранняя версия — функции копирования не подключены</div>
+      <div class="sidebar-bottom">Предварительная версия · проверьте восстановление до использования</div>
     </aside>
     <div class="content-shell">
-      <header class="topbar"><span class="topbar-title">{activeTab === 'overview' ? 'Обзор системы' : 'Журнал безопасности'}</span><div class="topbar-user"><span>{user?.username} · {roleName[user?.role ?? ''] ?? user?.role}</span><button class="text-button" onclick={() => void logout()} disabled={busy}>Выйти</button></div></header>
+      <header class="topbar"><span class="topbar-title">{activeTab === 'overview' ? 'Обзор системы' : activeTab === 'backup' ? 'Источники и история' : 'Журнал безопасности'}</span><div class="topbar-user"><span>{user?.username} · {roleName[user?.role ?? ''] ?? user?.role}</span><button class="text-button" onclick={() => void logout()} disabled={busy}>Выйти</button></div></header>
       <main class="dashboard">
         {#if errorMessage}<p class="error" role="alert">{errorMessage}</p>{/if}
         {#if activeTab === 'overview'}
           <div class="heading"><div><span class="eyebrow">СОСТОЯНИЕ СИСТЕМЫ</span><h1>BackupHub</h1><p class="secondary">Сведения о данном автономном экземпляре.</p></div><button class="outline" onclick={() => void refreshDashboard()}>Обновить</button></div>
-          <div class="warning"><strong>Резервное копирование пока недоступно.</strong><span>Движок Restic и очередь заданий проходят этап интеграции с нативными источниками. Эта панель не подтверждает защиту каких-либо данных.</span></div>
+          <div class="warning"><strong>Ранняя функциональная версия.</strong><span>Основные файловые сценарии работают, но не заменяют проверенное восстановление приложений. После добавления источника обязательно проверьте реальный снимок и его экспорт.</span></div>
           <div class="stat-grid">
             <section class="stat-card"><span>Состояние API</span><strong>{health?.service === 'running' ? 'Работает' : 'Нет данных'}</strong><small>Версия {health?.version ?? '—'}</small></section>
-            <section class="stat-card"><span>Готовность копирования</span><strong>{health?.backups_available ? 'Доступно' : 'Не готово'}</strong><small>Тестовые компоненты не считаются резервной копией</small></section>
+            <section class="stat-card"><span>Готовность копирования</span><strong>{health?.backups_available ? 'Доступно' : 'Не готово'}</strong><small>Факт запуска не подтверждает восстановимость данных</small></section>
             <section class="stat-card"><span>Схема каталога</span><strong>{identity?.schema_version ?? '—'}</strong><small>SQLite / автономный экземпляр</small></section>
           </div>
           <section class="detail-card"><h2>Идентификатор экземпляра</h2><code class="instance-id">{identity?.instance_uuid ?? '—'}</code><p class="secondary">Используется для разграничения независимых площадок и будущего объединённого просмотра.</p></section>
-          <section class="detail-card"><h2>Следующие этапы</h2><p class="secondary">Настройка источников SMB/SSH, создание снимков и проверенное восстановление будут доступны здесь после интеграционных тестов. Пока действия над реальными данными через UI отключены.</p></section>
+          <section class="detail-card"><h2>Рабочие возможности</h2><p class="secondary">В разделе «Источники, история и восстановление» можно создавать задания, просматривать завершённые снимки, скачивать выбранные файлы и папки ZIP и восстанавливать в новый каталог на сервере. PostgreSQL 1С split-config, Active Directory, SMB1, email и полноценная ротация ещё не готовы.</p></section>
+        {:else if activeTab === 'backup'}
+          <BackupPane role={user?.role ?? ''} />
         {:else if canAudit}
           <div class="heading"><div><span class="eyebrow">БЕЗОПАСНОСТЬ</span><h1>Журнал событий</h1><p class="secondary">Последние 20 событий авторизации и администрирования.</p></div><button class="outline" onclick={() => void refreshDashboard()}>Обновить</button></div>
           <section class="detail-card">

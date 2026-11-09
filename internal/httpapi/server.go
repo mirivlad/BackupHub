@@ -12,12 +12,13 @@ import (
  "sync"
  "time"
 
+ "github.com/mirivlad/BackupHub/internal/backup"
  "github.com/mirivlad/BackupHub/internal/auth"
  "github.com/mirivlad/BackupHub/internal/catalog"
  "github.com/mirivlad/BackupHub/internal/vault"
 )
 
-const Version = "0.0.0-dev"
+const Version = "0.1.0-preview.1"
 const sessionCookie = "backuphub_session"
 const csrfCookie = "backuphub_csrf"
 
@@ -25,6 +26,7 @@ type Server struct {
  catalog *catalog.Catalog
  auth *auth.Store
  vault *vault.Vault // Not exposed over the public API.
+ backup *backup.Service
  limits *rateLimiter
 }
 type rateBucket struct {
@@ -53,8 +55,10 @@ func (l *rateLimiter) allow(request *http.Request,action string,max int)bool{
  return b.count<=max
 }
 
-func New(c *catalog.Catalog,v *vault.Vault) http.Handler {
- s:=&Server{catalog:c,auth:auth.New(c),vault:v,limits:&rateLimiter{buckets:make(map[string]rateBucket)}}
+func New(c *catalog.Catalog,v *vault.Vault) http.Handler {return newHandler(c,v,nil)}
+func NewWithBackup(c *catalog.Catalog,v *vault.Vault,backup *backup.Service)http.Handler {return newHandler(c,v,backup)}
+func newHandler(c *catalog.Catalog,v *vault.Vault,b *backup.Service) http.Handler {
+ s:=&Server{catalog:c,auth:auth.New(c),vault:v,backup:b,limits:&rateLimiter{buckets:make(map[string]rateBucket)}}
  mux:=http.NewServeMux()
  mux.HandleFunc("/api/v1/health",s.health)
  mux.HandleFunc("/api/v1/setup/status",s.setupStatus)
@@ -64,6 +68,7 @@ func New(c *catalog.Catalog,v *vault.Vault) http.Handler {
  mux.HandleFunc("/api/v1/auth/me",s.me)
  mux.HandleFunc("/api/v1/system/identity",s.identity)
  mux.HandleFunc("/api/v1/audit",s.audit)
+ mux.HandleFunc("/api/v1/backup/",s.backupAPI)
  mux.HandleFunc("/",func(w http.ResponseWriter,r *http.Request){
   jsonResponse(w,http.StatusNotFound,map[string]string{"error":"endpoint unavailable; backup engine and UI are under development"})
  })
@@ -119,7 +124,7 @@ func (s *Server) health(w http.ResponseWriter,r *http.Request){
   Version string `json:"version"`
   BackupsAvailable bool `json:"backups_available"`
   Timestamp string `json:"timestamp"`
- }{"running",Version,false,time.Now().UTC().Format(time.RFC3339)})
+ }{"running",Version,s.backup!=nil,time.Now().UTC().Format(time.RFC3339)})
 }
 func (s *Server) setupStatus(w http.ResponseWriter,r *http.Request){
  if !method(w,r,http.MethodGet){return}

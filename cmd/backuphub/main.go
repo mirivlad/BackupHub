@@ -12,6 +12,7 @@ import (
  "syscall"
  "time"
 
+ "github.com/mirivlad/BackupHub/internal/backup"
  "github.com/mirivlad/BackupHub/internal/auth"
  "github.com/mirivlad/BackupHub/internal/catalog"
  "github.com/mirivlad/BackupHub/internal/httpapi"
@@ -37,7 +38,11 @@ func run(args []string)error{
  }
  flags:=flag.NewFlagSet(command,flag.ContinueOnError)
  dataDir:=flags.String("data-dir","/var/lib/backuphub","private state directory")
- listen:=flags.String("listen","127.0.0.1:8085","HTTP loopback address")
+ listen:=flags.String("listen","127.0.0.1:8085","HTTP address; external access requires TLS")
+ repoPath:=flags.String("repository",os.Getenv("BACKUPHUB_REPOSITORY"),"absolute path to encrypted Restic repository")
+ stagePath:=flags.String("staging",os.Getenv("BACKUPHUB_STAGING"),"private capture staging directory (must have sufficient free space for remote sources)")
+ tlsCert:=flags.String("tls-cert",os.Getenv("BACKUPHUB_TLS_CERT"),"TLS certificate")
+ tlsKey:=flags.String("tls-key",os.Getenv("BACKUPHUB_TLS_KEY"),"TLS key")
  uiDir:=flags.String("ui-dir","","compiled Svelte UI directory (optional)")
  version:=flags.Bool("version",false,"print version")
  if err:=flags.Parse(args);err!=nil{return err}
@@ -65,13 +70,17 @@ func run(args []string)error{
  case "serve":
   v,err:=vault.Open(c)
   if err!=nil{return err}
+  ctx:=context.Background()
+  svc,err:=backup.New(ctx,c,v,*repoPath,*stagePath)
+  if err!=nil{return fmt.Errorf("cannot initialize backup engine: %w",err)}
   host,_,err:=net.SplitHostPort(*listen)
   if err!=nil{return fmt.Errorf("invalid listen address: %w",err)}
   ip:=net.ParseIP(host)
-  if host!="localhost" && (ip==nil||!ip.IsLoopback()){
+  if host!="localhost" && (ip==nil||!ip.IsLoopback()) && (*tlsCert==""||*tlsKey==""){
    return fmt.Errorf("refusing non-loopback HTTP address without TLS: %q",*listen)
   }
-  handler:=httpapi.New(c,v)
+  if (*tlsCert=="")!=(*tlsKey==""){return fmt.Errorf("both TLS certificate and key are required")}
+  handler:=httpapi.NewWithBackup(c,v,svc)
   if *uiDir!="" {handler,err=httpapi.WithUI(handler,*uiDir);if err!=nil{return err}}
   server:=&http.Server{
    Addr:*listen,Handler:handler,
@@ -86,8 +95,13 @@ func run(args []string)error{
    defer cancel()
    if err:=server.Shutdown(ctx);err!=nil{slog.Error("shutdown error","error",err)}
   }()
-  slog.Info("BackupHub API started (backup/restore not implemented)","listen",*listen,"instance_uuid",c.InstanceID)
-  if err:=server.ListenAndServe();err!=nil&&err!=http.ErrServerClosed{return err}
+  if err:=svc.Start(signals);err!=nil{return fmt.Errorf("cannot start scheduler: %w",err)}
+  slog.Info("BackupHub started","listen",*listen,"instance_uuid",c.InstanceID)
+  if *tlsCert!="" {
+   if err:=server.ListenAndServeTLS(*tlsCert,*tlsKey);err!=nil&&err!=http.ErrServerClosed{return err}
+  }else {
+   if err:=server.ListenAndServe();err!=nil&&err!=http.ErrServerClosed{return err}
+  }
   return nil
  }
  return fmt.Errorf("unknown command: %q",command)

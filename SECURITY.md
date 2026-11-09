@@ -1,19 +1,13 @@
-# Security
+# BackupHub — Security Notes
 
-BackupHub remains in **early development**: **no production backup/restore capability** is available. Do not trust this build for production data protection.
+**v0.1.0 Preview 1 provides real backup and restore operations but is not production-hardened.** Use a dedicated internal test host, keep an independent established backup for critical systems, and verify restored content before reliance.
 
-## Current controls
+Controls implemented: Argon2id local passwords, one-time admin bootstrap, hashed database sessions, Secure/HttpOnly/SameSite=Strict cookies, CSRF protection, basic RBAC on source/job/export/restore APIs, authentication rate limits and audit records. Source credentials reside in AES-256-GCM vault outside the SQLite plaintext schema. Restic data is encrypted with a separate private key. Backend includes built-in TLS (initial cert is self-signed) and can sit behind Nginx.
 
-- Loopback-only HTTP API, intended to run behind a properly configured HTTPS reverse proxy (such as Nginx).
-- Explicit one-time master-key initialization; protected state directory and 0600 master key. Vault entries use AES-256-GCM with randomized nonces and associated data; the master key is separate from SQLite.
-- One-time, short-lived administrator bootstrap token issued by local CLI only.
-- Argon2id password hashing, 7-day hashed database sessions, Secure/HttpOnly/SameSite=Strict session cookies, separate CSRF token cookie and request header, per-IP rate limits, basic audit events and protected API.
-- Security-sensitive API endpoints require authentication; auditors and administrators can access audit records.
+**Unresolved threats/limitations:** local Restic repository and vault keys share the host by default; a compromised host can delete backups or read available plaintext; no off-host immutable copy or protected garbage collection; no full SQLite catalog disaster-recovery kit; remote SMB/SFTP ACL/xattr preservation incomplete; file-tree restore drills and protocol-specific security review are not complete. Backup data verification is not an application restore test. User-supplied local source path checks restrict BackupHub state overlap but the operator must restrict who can create sources. Credentials can be present in process memory during capture; PostgreSQL uses PGPASSWORD in child environment.
 
-## Important limits
+Operate the service only on trusted networks, configure firewall/TLS, preserve `master.key`, `restic.key` and state separately, keep repository storage on an independent disk/mount, and do not run ad hoc `restic forget/prune`.
 
-This is not a complete security review. A small same-origin Svelte interface for bootstrap/login/health/audit exists. Privileged backup operations, authorization scopes for source data, external recovery kit, independent repository protection, restore drills, and native source connectors are **not implemented** yet. An attacker who gets both the SQLite data and the live server's master key can decrypt source secrets. Store the master key in an access-controlled offline recovery kit and do not expose the backend HTTP port directly to a network.
+To report vulnerabilities, use GitHub private vulnerability reporting if enabled or contact the maintainers privately. Never paste secrets or database contents into public issues.
 
-Use [the security bootstrap instructions](docs/security-bootstrap.md) for safe local setup. Full threat model and required acceptance tests: [specification](docs/specification-v0.1.md).
-
-Please do not post credentials, repository keys, database dumps, mailboxes, or secrets in public issues. Use GitHub's private vulnerability reporting if enabled or another private maintainer channel.
+See [current preview release notes](docs/releases/v0.1.0-preview.1.md) and [full requirements](docs/specification-v0.1.md).

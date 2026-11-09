@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+ configure)
+  if ! getent group backuphub >/dev/null; then addgroup --system backuphub; fi
+  if ! id -u backuphub >/dev/null 2>&1; then
+    adduser --system --ingroup backuphub --home /var/lib/backuphub --no-create-home --disabled-login backuphub
+  fi
+  install -d -m 0700 -o backuphub -g backuphub /var/lib/backuphub /var/cache/backuphub
+  install -d -m 0750 -o root -g backuphub /etc/backuphub
+  if [ ! -e /etc/backuphub/server.key ] && [ ! -e /etc/backuphub/server.crt ]; then
+    openssl req -newkey rsa:3072 -nodes -x509 -days 365 -sha256 -subj "/CN=backuphub.local" \
+      -keyout /etc/backuphub/server.key -out /etc/backuphub/server.crt >/dev/null 2>&1
+  fi
+  if [ -f /etc/backuphub/server.key ]; then
+    chown root:backuphub /etc/backuphub/server.key
+    chmod 0640 /etc/backuphub/server.key
+  fi
+  if [ -f /etc/backuphub/server.crt ]; then
+    chown root:backuphub /etc/backuphub/server.crt
+    chmod 0644 /etc/backuphub/server.crt
+  fi
+  if [ ! -e /var/lib/backuphub/master.key ]; then
+    runuser -u backuphub -- /usr/bin/backuphub init -data-dir /var/lib/backuphub
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload || true
+    systemctl enable backuphub.service >/dev/null || true
+    systemctl restart backuphub.service || true
+  fi
+  echo ""
+  echo "BackupHub installed. Open https://<backup-host>:8443/"
+  echo "The initial certificate is self-signed; replace it with a trusted certificate."
+  echo "Create your one-time administrator token (never printed into apt logs):"
+  echo "  sudo runuser -u backuphub -- backuphub bootstrap -data-dir /var/lib/backuphub"
+  echo "State and encrypted key: /var/lib/backuphub (keep an independent recovery copy)."
+  echo "For troubleshooting: sudo journalctl -u backuphub -f"
+ ;;
+esac
+exit 0
