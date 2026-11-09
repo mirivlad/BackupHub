@@ -71,7 +71,17 @@ all keys needed for the registered protected repositories, so this ZIP is
 highly sensitive: keep it secure and independent of the backup server.
 It does **not** contain Restic repository data.
 
-On a new installation, the same browser screen attaches an **existing**
+On a newly installed, **empty** BackupHub you can upload the saved ZIP in
+the Recovery screen, confirm that it replaces the empty installation and let
+systemd restart the service. A narrowly scoped root-only ExecStartPre applies
+the checked kit using Linux atomic directory exchange, keeping the initial
+empty installation in /var/lib/backuphub.before-recovery. Old sessions are
+revoked and restored jobs remain paused. Log in using the OLD administrator
+credentials. Mount the backup disks and select the recovered storage in the
+browser to rebind it to a different directory; all historical snapshot IDs
+must match.
+
+Without the full kit, the same browser screen attaches an **existing**
 mounted disk without initialization, optionally imports its original key,
 and reconstructs the historical snapshot index from portable Restic commit
 markers. It does **not** fabricate working source credentials or schedules.

@@ -55,6 +55,9 @@ func TestBrowserKitStagingAndAtomicServiceStartupSwap(t *testing.T){
  var active int
  if err=restored.DB.QueryRow("SELECT enabled FROM schedule_entries WHERE id=?",source.ID).Scan(&active);err!=nil||active!=0{t.Fatalf("dangerous restored schedule resumed automatically: %d %v",active,err)}
  recoveredVault,err:=vault.Open(restored);if err!=nil{t.Fatalf("cannot use old Vault key: %v",err)}
+ // Simulate the original machine disappearing after the kit was saved.
+ lostOriginal:=original.repo.path+".destroyed"
+ if err=os.Rename(original.repo.path,lostOriginal);err!=nil{t.Fatal(err)}
  recoveredSvc,err:=New(ctx,restored,recoveredVault,"","")
  if err!=nil{t.Fatalf("cannot open new instance with missing original primary disk: %v",err)}
  if _,err=recoveredSvc.repositoryFor(ctx,PrimaryStorageID);err==nil{t.Fatal("old primary unexpectedly regenerated")}
