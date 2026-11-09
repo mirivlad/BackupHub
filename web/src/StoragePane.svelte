@@ -88,7 +88,7 @@
     </div>
     <form class="storage-form" onsubmit={(event)=>{event.preventDefault();void create();}}>
      <label>Название хранилища<input required maxlength="120" bind:value={storageName} placeholder="Архив на диске 1"/></label>
-     <label>Новая папка<input required minlength="1" maxlength="64" pattern="[A-Za-z0-9_-][A-Za-z0-9._-]*" bind:value={folder}/></label>
+     <label>Новая папка<input required minlength="1" maxlength="64" bind:value={folder}/></label>
      <button type="submit" disabled={busy||!chosen}>Создать папку и подключить хранилище</button>
     </form>
    </div>

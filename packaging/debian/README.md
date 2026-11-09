@@ -1,45 +1,76 @@
-# BackupHub Debian package
+# BackupHub Debian package (v0.1.0 Preview 2)
 
-The package includes the compiled Go daemon, Svelte production assets and a
-systemd unit. The service runs as the dedicated, unprivileged `backuphub` user.
+`sudo apt install ./backuphub_0.1.0~preview.2_amd64.deb` creates the
+dedicated unprivileged system user `backuphub`, initializes state under
+`/var/lib/backuphub`, installs the Go daemon, Svelte UI, an HTTPS service and
+a **separate** root-owned socket-activated `backuphub-storage` helper. Neither
+reinstallation nor package removal deletes backup data or encryption keys.
 
-After installation, browse `https://backup-host:8443/`, create the first
-administrator via a token displayed by `runuser -u backuphub -- backuphub
-bootstrap -data-dir /var/lib/backuphub`. The initial TLS certificate is
-self-signed. Configure an existing trusted Nginx proxy or replace the
-certificate in `/etc/backuphub`.
+When the package installer is connected to a TTY, it may offer the option to
+set the initial admin username/password interactively without exposing the
+password on argv or in debconf. It never blocks a noninteractive deployment.
+The same safe setup is available later:
 
-The built-in Restic repository defaults to `/var/lib/backuphub/repository`.
-For a large NAS/storage mount, configure `BACKUPHUB_REPOSITORY=/mount/path` in
-`/etc/backuphub/backuphub.env` **before starting the service for the first
-time**; also configure the systemd sandbox write permissions for that path via
-a unit override. Merely changing the env variable on an existing instance
-without migrating the encrypted repository and preserving `restic.key` makes
-the original backups inaccessible.
+```bash
+sudo runuser -u backuphub -- backuphub setup-admin -data-dir /var/lib/backuphub
+```
 
-Backups of remote SMB/SFTP folders currently require temporary staging space
-for the **complete remote dataset**. Ensure suitable free disk space under
-`/var/lib/backuphub/staging` (or set `BACKUPHUB_STAGING` and adjust
-systemd sandbox permissions). Once staged, Restic deduplicates and encrypts
-on the persistent destination. Do not point source paths at BackupHub's own
-state or repository. The first preview does not implement streaming remote
-tree ingestion, cross-host immutable storage or retention.
+Alternatively, use `backuphub bootstrap` and create the first administrator
+in the browser. Then browse `https://backup-host:8443/`. The initial
+certificate is self-signed; replace it with trusted TLS or a well-configured
+Nginx reverse proxy.
 
-SFTP host keys **must** be registered, e.g. via securely reviewed known_hosts
-entries in `/etc/backuphub/known_hosts` with read permissions for backuphub.
-Use no insecure known-hosts bypass. SMB2/3 connects using NTLMv2 with required
-message signing; SMB1 is unsupported in this preview. PostgreSQL uses
-pg_dump custom format and detects invalid dump TOC with pg_restore. It does
-not yet support split-config backups for Postgres Pro 1C.
+## Storage configuration
 
-Restoration always uses a **new** server-side directory under
-`/var/lib/backuphub/restores` or exports ZIP64 to the browser. No in-place
-overwrite, restore to SMB share or automatic AD/system-state restore is offered.
-ZIP exports stream and do not require a second full copy.
+**No manual systemd overrides should be required for normal mounted volumes.**
+In the admin UI, open Storage, choose an existing mounted volume under
+`/mnt`, `/media`, `/backup`, `/backup2` or `/srv/backups`. Browse its
+directories, supply a **new subdirectory name** and a friendly storage name.
+The root-only helper creates just that new directory and grants `backuphub`
+access to it; BackupHub initializes a separately encrypted Restic repository.
 
-Keep independent offline copies of `master.key` and `restic.key`; losing
-them means losing access to credentials and encrypted backups.
+Select the destination repository in each backup job. Different jobs can use
+different disks. Switching a job only affects future backups; prior restore
+points stay bound to the original repository. If an external mount disappears,
+new backups fail closed instead of silently filling the system disk.
 
-Build release locally: `npm ci --prefix web && npm run build --prefix web &&
-go build -o dist/backuphub ./cmd/backuphub &&
-sh packaging/debian/build.sh`.
+The built-in legacy repository under `/var/lib/backuphub/repository` remains
+available to maintain older deployments. If `BACKUPHUB_REPOSITORY` was set
+before, keep that setting unchanged: changing it is *not* an online migration.
+Use the new Storage UI to add additional repositories. For complex/multiple
+NAS mounts, each backing filesystem must support private directories owned
+by the `backuphub` service account.
+
+The root storage-helper has no TCP listener and only operates through the
+root:backuphub 0660 Unix socket `/run/backuphub-storage.sock`. It cannot
+delete paths, modify ownership of existing directories or follow symlinks
+while browsing. Only admin sessions may invoke its backend API.
+
+**Back up ALL keys**: `/var/lib/backuphub/master.key`,
+`/var/lib/backuphub/restic.key`, each `restic-<id>.key` plus the SQLite
+catalog and the off-host repository data. Keep offline copies. Losing a key
+makes the corresponding encrypted data unrecoverable.
+
+## Source limitations
+
+SMB2/3 and SFTP captures stage the **entire remote dataset** in
+`/var/lib/backuphub/staging` before Restic can deduplicate and encrypt it.
+Ensure enough temporary space. Do not select BackupHub's own state/repository
+as a source. SFTP host key verification requires a trusted
+`/etc/backuphub/known_hosts`. SMB1 is unsupported. PostgreSQL uses custom
+`pg_dump` with TOC validation only; native split-config for PostgreSQL Pro 1C
+is **not** included.
+
+Restoration is limited to a **new** server-side directory or ZIP download,
+not overwriting live data. There is no automatic protected retention, external
+immutable replication, 1C restore, Windows VSS/AD or mailbox connector yet.
+
+See [detailed storage guide](../../docs/multi-storage.md).
+
+Build locally:
+```bash
+npm ci --prefix web
+npm run build --prefix web
+go build -o dist/backuphub ./cmd/backuphub
+sh packaging/debian/build.sh
+```

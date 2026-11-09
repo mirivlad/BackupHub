@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build an installable Debian/Ubuntu amd64 package from already-tested binaries.
 set -eu
-VERSION="${1:-0.1.0~preview.1}"
+VERSION="${1:-0.1.0~preview.2}"
 ROOT="${2:-dist}"
 ARCH="${3:-amd64}"
 BASE="$ROOT/backuphub_${VERSION}_${ARCH}"

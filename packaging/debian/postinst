@@ -32,8 +32,20 @@ case "${1:-}" in
   echo ""
   echo "BackupHub installed. Open https://<backup-host>:8443/"
   echo "The initial certificate is self-signed; replace it with a trusted certificate."
-  echo "Create your one-time administrator token (never printed into apt logs):"
-  echo "  sudo runuser -u backuphub -- backuphub bootstrap -data-dir /var/lib/backuphub"
+  if [ -z "${2:-}" ] && [ -t 0 ]; then
+    printf 'Create the first BackupHub administrator interactively now? [y/N]: '
+    IFS= read -r choice || choice=""
+    case "$choice" in
+      [Yy]|[Yy][Ee][Ss]|[Дд]|[Дд][Аа])
+        if ! runuser -u backuphub -- /usr/bin/backuphub setup-admin -data-dir /var/lib/backuphub; then
+          echo "Administrator setup was not completed; use the command below when ready."
+        fi
+      ;;
+    esac
+  fi
+  echo "If you skipped initial setup, run:"
+  echo "  sudo runuser -u backuphub -- backuphub setup-admin -data-dir /var/lib/backuphub"
+  echo "Alternatively obtain a one-time token with 'backuphub bootstrap' and create the administrator in the browser."
   echo "State and encrypted key: /var/lib/backuphub (keep an independent recovery copy)."
   echo "For troubleshooting: sudo journalctl -u backuphub -f"
  ;;

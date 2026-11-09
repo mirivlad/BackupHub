@@ -58,6 +58,7 @@ func TestMigrateFromV1PreservesIdentity(t *testing.T){
  } {if _,err=raw.Exec(stmt);err!=nil{t.Fatal(err)}}
 
  if _,err=raw.Exec("CREATE TABLE audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, resource TEXT NOT NULL, metadata_json TEXT NOT NULL)");err!=nil{t.Fatal(err)}
+ if _,err=raw.Exec("INSERT INTO sources(id,kind,display_name,endpoint,settings_json,created_at) VALUES(?,?,?,?,?,?)","legacy-source","local","Old source","","{}","2026-11-01T00:00:00Z");err!=nil{t.Fatal(err)}
  original:="retained-old-instance-id"
  if _,err=raw.Exec("INSERT INTO instance VALUES(1,?,?)",original,"2026-11-01T00:00:00Z");err!=nil{t.Fatal(err)}
  if _,err=raw.Exec("PRAGMA user_version=1");err!=nil{t.Fatal(err)}
@@ -65,6 +66,8 @@ func TestMigrateFromV1PreservesIdentity(t *testing.T){
  upgraded,err:=Open(dir);if err!=nil{t.Fatal(err)}
  defer upgraded.Close()
  if upgraded.InstanceID!=original{t.Fatal("instance UUID lost during migration")}
+ var storageID string
+ if err=upgraded.DB.QueryRow("SELECT repository_id FROM source_repositories WHERE source_id='legacy-source'").Scan(&storageID);err!=nil||storageID!="primary"{t.Fatalf("legacy source destination lost: id=%s err=%v",storageID,err)}
  var count int
  if err=upgraded.DB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE name='vault_secrets'").Scan(&count);err!=nil||count!=1{t.Fatalf("v2 migration missing: %v",err)}
 }

@@ -15,6 +15,8 @@ import (
  "strconv"
  "strings"
  "time"
+ "unicode"
+ "unicode/utf8"
 
  "golang.org/x/sys/unix"
 )
@@ -81,15 +83,15 @@ func openPathNoFollow(p string)(int,error){
 }
 
 func validFolder(name string)bool{
- if len(name)<1||len(name)>64||name[0]=='.'||name=="."||name==".."{return false}
+ if name==""||name=="."||name==".."||strings.HasPrefix(name,".")||len(name)>192||utf8.RuneCountInString(name)>64||!utf8.ValidString(name){return false}
  for _,c:=range name{
-  if !(c>='a'&&c<='z'||c>='A'&&c<='Z'||c>='0'&&c<='9'||c=='_'||c=='-'||c=='.'){return false}
+  if !(unicode.IsLetter(c)||unicode.IsDigit(c)||c=='_'||c=='-'||c=='.'){return false}
  }
  return true
 }
 func(h *Handler) provision(parent,folder string)(string,error){
  if err:=h.validateStoragePath(parent);err!=nil{return "",err}
- if !validFolder(folder){return "",errors.New("folder must contain only letters, digits, dash, dot or underscore (1-64 chars)")}
+ if !validFolder(folder){return "",errors.New("folder must contain only letters, digits, dash, dot or underscore (1-64 characters)")}
  fd,err:=openPathNoFollow(parent)
  if err!=nil{return "",err}
  defer unix.Close(fd)

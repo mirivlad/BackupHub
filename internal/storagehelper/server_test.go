@@ -22,7 +22,7 @@ func TestPathValidationAndNoFollow(t *testing.T){
  for _,name:=range []string{".","..","../etc","a/b","a b",".hidden",""}{
   if validFolder(name){t.Errorf("unsafe folder accepted %q",name)}
  }
- if !validFolder("BackupHub_2026-01"){t.Fatal("valid name rejected")}
+ if !validFolder("BackupHub_2026-01")||!validFolder("РезервныеКопии-2026"){t.Fatal("valid name rejected")}
  dir:=t.TempDir()
  safe:=filepath.Join(dir,"dir")
  if err:=os.Mkdir(safe,0700);err!=nil{t.Fatal(err)}

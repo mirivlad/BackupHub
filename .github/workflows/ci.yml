@@ -82,12 +82,12 @@ jobs:
           go build -trimpath -ldflags='-s -w' -o dist/backuphub ./cmd/backuphub
       - name: Create and inspect .deb
         run: |
-          sh packaging/debian/build.sh 0.1.0~preview.1
-          dpkg-deb -c dist/backuphub_0.1.0~preview.1_amd64.deb | grep '/usr/share/backuphub/web/index.html'
-          dpkg-deb -c dist/backuphub_0.1.0~preview.1_amd64.deb | grep '/lib/systemd/system/backuphub.service'
+          sh packaging/debian/build.sh 0.1.0~preview.2
+          dpkg-deb -c dist/backuphub_0.1.0~preview.2_amd64.deb | grep '/usr/share/backuphub/web/index.html'
+          dpkg-deb -c dist/backuphub_0.1.0~preview.2_amd64.deb | grep '/lib/systemd/system/backuphub.service'
       - name: Install Debian package and test HTTPS service
         run: |
-          sudo apt-get install -y ./dist/backuphub_0.1.0~preview.1_amd64.deb
+          sudo apt-get install -y ./dist/backuphub_0.1.0~preview.2_amd64.deb
           # postinst starts the daemon and initializes Restic; do not interrupt it.
           ready=false
           for i in $(seq 1 30); do
@@ -141,6 +141,51 @@ jobs:
           test -n "$restored"
           sudo grep -x 'preview-roundtrip' "$restored/Video/clip.txt"
           test ! -f /opt/backuphub-smoke/Video/clip.txt
+          # Root helper is socket-activated; normal daemon remains unprivileged.
+          sudo systemctl is-active --quiet backuphub-storage.socket
+          curl -fksS -b "$cookies" "$api/backup/storages" | python3 -c 'import json,sys;assert any(s["id"]=="primary" for s in json.load(sys.stdin)["storages"])'
+          curl -fksS -b "$cookies" "$api/backup/storages/mounts" | python3 -c 'import json,sys;assert isinstance(json.load(sys.stdin)["mounts"],list)'
+          unsafe_status="$(curl -ksS -o /tmp/backuphub-unsafe.json -w '%{http_code}' -b "$cookies" "${headers[@]}" -d '{"name":"bad","parent_path":"/etc","folder":"backups"}' "$api/backup/storages")"
+          test "$unsafe_status" = "400"
+          # Prefer actual mounted storage for a second end-to-end round trip.
+          sudo mkdir -p /mnt/backuphub-ci
+          if sudo mount --bind /mnt/backuphub-ci /mnt/backuphub-ci; then
+            filesystem="$(findmnt -n -o FSTYPE --target /mnt/backuphub-ci)"
+            if [[ "$filesystem" != overlay && "$filesystem" != tmpfs && "$filesystem" != autofs ]]; then
+              volumes="$(curl -fksS -b "$cookies" "$api/backup/storages/mounts")"
+              printf '%s' "$volumes" | python3 -c 'import json,sys;assert any(v["path"]=="/mnt/backuphub-ci" for v in json.load(sys.stdin)["mounts"])'
+              second="$(curl -fksS -b "$cookies" "${headers[@]}" -d '{"name":"CI Disk 2","parent_path":"/mnt/backuphub-ci","folder":"BackupHubCI"}' "$api/backup/storages")"
+              repo_id="$(printf '%s' "$second" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')"
+              test -n "$repo_id"
+              sudo test "$(stat -c '%a' /mnt/backuphub-ci/BackupHubCI)" = 700
+              sudo test "$(stat -c '%U' /mnt/backuphub-ci/BackupHubCI)" = backuphub
+              # Switching destinations never moves or deletes an older snapshot.
+              curl -fksS -b "$cookies" "${headers[@]}" -d "{\"repository_id\":\"$repo_id\"}" "$api/backup/sources/$source_id/storage" > /dev/null
+              echo 'on-second-disk' | sudo tee /opt/backuphub-smoke/Video/clip.txt > /dev/null
+              sudo chown backuphub:backuphub /opt/backuphub-smoke/Video/clip.txt
+              curl -fksS -b "$cookies" "${headers[@]}" -X POST "$api/backup/sources/$source_id/run" > /dev/null
+              new_snap=""
+              for i in $(seq 1 60); do
+                response="$(curl -fksS -b "$cookies" "$api/backup/snapshots?source_id=$source_id")"
+                new_snap="$(printf '%s' "$response" | python3 -c 'import json,sys;a=json.load(sys.stdin)["snapshots"];print(a[0]["id"] if len(a)>=2 else "")')"
+                if [ -n "$new_snap" ]; then break; fi
+                sleep 2
+              done
+              test -n "$new_snap"
+              response="$(curl -fksS -b "$cookies" "$api/backup/snapshots?source_id=$source_id")"
+              printf '%s' "$response" | python3 -c 'import json,sys;a=json.load(sys.stdin)["snapshots"];assert a[0]["repository_id"]!="primary";assert a[1]["repository_id"]=="primary"'
+              curl -fksS -b "$cookies" "$api/backup/snapshots/$new_snap/download?mode=single&path=Video%2Fclip.txt" -o /tmp/backuphub-second.txt
+              grep -x 'on-second-disk' /tmp/backuphub-second.txt
+              # Original data is still in the primary repository.
+              curl -fksS -b "$cookies" "$api/backup/snapshots/$snapshot/download?mode=single&path=Video%2Fclip.txt" -o /tmp/backuphub-first.txt
+              grep -x 'preview-roundtrip' /tmp/backuphub-first.txt
+            else
+              echo "Optional second-volume CI smoke skipped: runner root filesystem is $filesystem"
+            fi
+            sudo umount /mnt/backuphub-ci
+          else
+            echo "Optional second-volume CI smoke skipped: bind mounts unavailable"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: backuphub-debian-amd64-preview
@@ -165,15 +210,15 @@ jobs:
       - name: Verify SHA256 of built Debian artifact
         run: |
           cd release
-          sha256sum -c backuphub_0.1.0~preview.1_amd64.deb.sha256
+          sha256sum -c backuphub_0.1.0~preview.2_amd64.deb.sha256
       - name: Publish immutable prerelease assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.1.0-preview.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v0.1.0-preview.1 already published; refusing to overwrite release artifacts"
+          if gh release view v0.1.0-preview.2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.1.0-preview.2 already published; refusing to overwrite release artifacts"
             exit 0
           fi
-          gh release create v0.1.0-preview.1 release/backuphub_0.1.0~preview.1_amd64.deb release/backuphub_0.1.0~preview.1_amd64.deb.sha256 \
+          gh release create v0.1.0-preview.2 release/backuphub_0.1.0~preview.2_amd64.deb release/backuphub_0.1.0~preview.2_amd64.deb.sha256 \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.1.0 Preview 1" \
-            --prerelease --notes-file docs/releases/v0.1.0-preview.1.md
+            --prerelease --notes-file docs/releases/v0.1.0-preview.2.md
