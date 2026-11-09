@@ -83,12 +83,12 @@ jobs:
           if file dist/backuphub | grep -q 'dynamically linked'; then echo 'DEB binary must not depend on the CI runner glibc'; exit 1; fi
       - name: Create and inspect .deb
         run: |
-          sh packaging/debian/build.sh 0.1.0~preview.3
-          dpkg-deb -c dist/backuphub_0.1.0~preview.3_amd64.deb | grep '/usr/share/backuphub/web/index.html'
-          dpkg-deb -c dist/backuphub_0.1.0~preview.3_amd64.deb | grep '/lib/systemd/system/backuphub.service'
+          sh packaging/debian/build.sh 0.1.0~preview.4
+          dpkg-deb -c dist/backuphub_0.1.0~preview.4_amd64.deb | grep '/usr/share/backuphub/web/index.html'
+          dpkg-deb -c dist/backuphub_0.1.0~preview.4_amd64.deb | grep '/lib/systemd/system/backuphub.service'
       - name: Install Debian package and test HTTPS service
         run: |
-          sudo apt-get install -y ./dist/backuphub_0.1.0~preview.3_amd64.deb
+          sudo apt-get install -y ./dist/backuphub_0.1.0~preview.4_amd64.deb
           # postinst starts the daemon and initializes Restic; do not interrupt it.
           ready=false
           for i in $(seq 1 30); do
@@ -153,6 +153,17 @@ jobs:
           printf '%s' "$result" | python3 -c 'import json,sys;assert json.load(sys.stdin)["default_repository_password_mode"]=="no_password"'
           # Legacy primary must remain protected regardless of the new preference.
           curl -fksS -b "$cookies" "$api/backup/storages" | python3 -c 'import json,sys;a=json.load(sys.stdin)["storages"];assert next(s for s in a if s["id"]=="primary")["password_mode"]=="password"'
+          # Operator can export a consistent ZIP with catalog and recovery keys.
+          curl -fksS -b "$cookies" "$api/system/recovery-kit" -o /tmp/backuphub-ci-recovery-kit.zip
+          python3 -c 'import zipfile,json;z=zipfile.ZipFile("/tmp/backuphub-ci-recovery-kit.zip");m=json.loads(z.read("recovery-manifest.json"));assert m["format"]=="backuphub.recovery-kit.v1";assert all(x in z.namelist() for x in ["catalog.db","restic.key","master.key"])'
+          sudo install -m 0600 -o backuphub -g backuphub /tmp/backuphub-ci-recovery-kit.zip /var/lib/backuphub/ci-recovery-kit.zip
+          sudo runuser -u backuphub -- backuphub recovery-kit-restore -kit /var/lib/backuphub/ci-recovery-kit.zip -data-dir /var/lib/backuphub/ci-restored
+          sudo test -f /var/lib/backuphub/ci-restored/catalog.db
+          sudo test -f /var/lib/backuphub/ci-restored/master.key
+          # Recovery never overwrites a populated state directory.
+          if sudo runuser -u backuphub -- backuphub recovery-kit-restore -kit /var/lib/backuphub/ci-recovery-kit.zip -data-dir /var/lib/backuphub/ci-restored; then
+            echo "Recovery Kit unexpectedly overwrote an existing state directory"; exit 1
+          fi
           # Prefer actual mounted storage for a second end-to-end round trip.
           repo_id=""
           sudo mkdir -p /mnt/backuphub-ci
@@ -188,6 +199,32 @@ jobs:
               printf '%s' "$response" | python3 -c 'import json,sys;a=json.load(sys.stdin)["snapshots"];assert a[0]["repository_id"]!="primary";assert a[1]["repository_id"]=="primary"'
               curl -fksS -b "$cookies" "$api/backup/snapshots/$new_snap/download?mode=single&path=Video%2Fclip.txt" -o /tmp/backuphub-second.txt
               grep -x 'on-second-disk' /tmp/backuphub-second.txt
+              # A second fresh BackupHub has NO original SQLite or Restic keys.
+              sudo install -d -m 0700 -o backuphub -g backuphub /var/lib/backuphub-ci-clean
+              sudo runuser -u backuphub -- backuphub init -data-dir /var/lib/backuphub-ci-clean
+              sudo systemd-run --unit=backuphub-recovery-ci --property=User=backuphub --property=Group=backuphub -- /usr/bin/backuphub serve -data-dir /var/lib/backuphub-ci-clean -listen 127.0.0.1:8444 -tls-cert /etc/backuphub/server.crt -tls-key /etc/backuphub/server.key
+              cleanapi=https://127.0.0.1:8444/api/v1
+              ready=false
+              for i in $(seq 1 30); do
+                if curl -fksS --max-time 3 "$cleanapi/health" >/dev/null; then ready=true; break; fi
+                sleep 2
+              done
+              if [ "$ready" != true ]; then sudo journalctl -u backuphub-recovery-ci -n 80 --no-pager; exit 1; fi
+              clean_token="$(sudo runuser -u backuphub -- backuphub bootstrap -data-dir /var/lib/backuphub-ci-clean | sed -n '2p')"
+              curl -fksS -H 'Content-Type: application/json' -d "{\"bootstrap_token\":\"$clean_token\",\"username\":\"recoveryadmin\",\"password\":\"test-only-recovery-password-ci-1234\"}" "$cleanapi/setup/admin" > /dev/null
+              clean_cookies=/tmp/backuphub-ci-clean-cookies.txt
+              curl -fksS -c "$clean_cookies" -H 'Content-Type: application/json' -d '{"username":"recoveryadmin","password":"test-only-recovery-password-ci-1234"}' "$cleanapi/auth/login" > /dev/null
+              clean_csrf="$(awk '$6 == "backuphub_csrf" {print $7}' "$clean_cookies")"
+              test -n "$clean_csrf"
+              imported="$(curl -fksS -b "$clean_cookies" -H "X-BackupHub-CSRF: $clean_csrf" -H "Content-Type: application/json" -d '{"name":"Recovered Disk","parent_path":"/mnt/backuphub-ci/BackupHubCI","password_mode":"no_password"}' "$cleanapi/backup/storages/import")"
+              printf '%s' "$imported" | python3 -c 'import json,sys;r=json.load(sys.stdin);assert r["snapshots"]==1 and r["sources"]==1 and r["storage"]["password_mode"]=="no_password"'
+              curl -fksS -b "$clean_cookies" "$cleanapi/backup/snapshots" | python3 -c 'import json,sys;a=json.load(sys.stdin)["snapshots"];assert len(a)==1 and a[0]["repository_id"]!="primary"'
+              curl -fksS -b "$clean_cookies" "$cleanapi/backup/sources" | python3 -c 'import json,sys;assert json.load(sys.stdin)["sources"]==[]'
+              curl -fksS -b "$clean_cookies" "$cleanapi/backup/snapshots/$new_snap/download?mode=single&path=Video%2Fclip.txt" -o /tmp/backuphub-ci-disaster-restored.txt
+              grep -x 'on-second-disk' /tmp/backuphub-ci-disaster-restored.txt
+              sudo test ! -e /var/lib/backuphub-ci-clean/restic-*.key
+              sudo systemctl stop backuphub-recovery-ci.service
+
               # Offline restore through stock Restic from the repo alone.
               native="$(sudo runuser -u backuphub -- restic --repo /mnt/backuphub-ci/BackupHubCI/repository --insecure-no-password snapshots --json --tag "bh-source-$source_id" | python3 -c 'import json,sys;a=json.load(sys.stdin);assert len(a)>0;print(a[-1]["id"])')"
               sudo runuser -u backuphub -- restic --repo /mnt/backuphub-ci/BackupHubCI/repository --insecure-no-password restore "$native" --target /mnt/backuphub-ci/BackupHubCI/restore-smoke
@@ -230,15 +267,15 @@ jobs:
       - name: Verify SHA256 of built Debian artifact
         run: |
           cd release
-          sha256sum -c backuphub_0.1.0~preview.3_amd64.deb.sha256
+          sha256sum -c backuphub_0.1.0~preview.4_amd64.deb.sha256
       - name: Publish immutable prerelease assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.1.0-preview.3 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v0.1.0-preview.3 already published; refusing to overwrite release artifacts"
+          if gh release view v0.1.0-preview.4 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.1.0-preview.4 already published; refusing to overwrite release artifacts"
             exit 0
           fi
-          gh release create v0.1.0-preview.3 release/backuphub_0.1.0~preview.3_amd64.deb release/backuphub_0.1.0~preview.3_amd64.deb.sha256 \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.1.0 Preview 3" \
-            --prerelease --notes-file docs/releases/v0.1.0-preview.3.md
+          gh release create v0.1.0-preview.4 release/backuphub_0.1.0~preview.4_amd64.deb release/backuphub_0.1.0~preview.4_amd64.deb.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.1.0 Preview 4" \
+            --prerelease --notes-file docs/releases/v0.1.0-preview.4.md

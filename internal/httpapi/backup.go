@@ -123,7 +123,18 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if len(path)==2&&path[0]=="storages"{
+	if len(path)==2 && path[0]=="storages" && path[1]=="import" {
+  if !isAdmin{jsonResponse(w,403,map[string]string{"error":"administrator required"});return}
+  if !method(w,r,http.MethodPost){return}
+  var payload backup.ImportStorageRequest
+  if !decode(w,r,&payload){return}
+  imported,err:=s.backup.ImportStorage(r.Context(),payload)
+  if err!=nil{slog.Warn("emergency storage import rejected","error",publicError(err));fail(err);return}
+  s.backup.Audit(r.Context(),user.ID,"storage.recovery_import",imported.Storage.ID)
+  jsonResponse(w,201,imported)
+  return
+ }
+ if len(path)==2&&path[0]=="storages"{
 		if !isAdmin{jsonResponse(w,403,map[string]string{"error":"administrator required"});return}
 		if !method(w,r,http.MethodGet){return}
 		switch path[1]{

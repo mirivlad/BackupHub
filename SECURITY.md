@@ -44,3 +44,16 @@ The metadata schema assigns `password` to all pre-existing storages;
 unknown modes are rejected, not interpreted as passwordless.
 The administrator-only settings endpoint enforces session authentication,
 CSRF protection on changes and audit logging.
+
+## Recovery Kit and offline import (Preview 4)
+
+The admin-only `/api/v1/system/recovery-kit` endpoint exports a consistent
+SQLite snapshot with Vault master and repository keys over authenticated HTTPS.
+**The ZIP itself is not encrypted**, contains highly sensitive key material
+and must never be shared publicly. It is audited and sent with no-cache headers.
+Offline kit restore refuses any existing destination, enforces strict file
+names, modes, size limits, manifest identity and SQLite integrity.
+A mounted Restic archive can be read back independently from its portable
+commit markers. The import never runs Restic init/forget/prune and never
+recreates a missing disk. Imported historical sources have **no fabricated
+credentials or runnable schedules**.

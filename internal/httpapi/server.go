@@ -18,7 +18,7 @@ import (
  "github.com/mirivlad/BackupHub/internal/vault"
 )
 
-const Version = "0.1.0-preview.3"
+const Version = "0.1.0-preview.4"
 const sessionCookie = "backuphub_session"
 const csrfCookie = "backuphub_csrf"
 
@@ -68,6 +68,7 @@ func newHandler(c *catalog.Catalog,v *vault.Vault,b *backup.Service) http.Handle
  mux.HandleFunc("/api/v1/auth/me",s.me)
  mux.HandleFunc("/api/v1/system/identity",s.identity)
  mux.HandleFunc("/api/v1/system/settings",s.systemSettings)
+ mux.HandleFunc("/api/v1/system/recovery-kit",s.recoveryKit)
  mux.HandleFunc("/api/v1/audit",s.audit)
  mux.HandleFunc("/api/v1/backup/",s.backupAPI)
  mux.HandleFunc("/",func(w http.ResponseWriter,r *http.Request){

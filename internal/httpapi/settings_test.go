@@ -2,6 +2,8 @@ package httpapi
 
 import (
  "context"
+ "archive/zip"
+ "bytes"
  "net/http"
  "net/http/httptest"
  "os"
@@ -41,6 +43,15 @@ func TestSettingsAuthenticationCSRFAndPersistence(t *testing.T){
  }
  if session==nil||csrf==nil{t.Fatal("missing cookies")}
  if got:=request(t,h,"GET",path,"",session).Code;got!=200{t.Fatalf("admin settings GET: %d",got)}
+ if got:=request(t,h,"GET","/api/v1/system/recovery-kit","").Code;got!=401{t.Fatalf("unprivileged kit download: %d",got)}
+ kitResponse:=request(t,h,"GET","/api/v1/system/recovery-kit","",session)
+ if kitResponse.Code!=200{t.Fatalf("recovery kit download failed: %d %s",kitResponse.Code,kitResponse.Body.String())}
+ kit,err:=zip.NewReader(bytes.NewReader(kitResponse.Body.Bytes()),int64(kitResponse.Body.Len()))
+ if err!=nil{t.Fatal(err)}
+ found:=false
+ for _,f:=range kit.File{if f.Name=="recovery-manifest.json"{found=true}}
+ if !found{t.Fatal("recovery kit manifest missing")}
+
  if got:=request(t,h,"POST",path,`{"default_repository_password_mode":"no_password"}`,session).Code;got!=403{t.Fatalf("missing CSRF allowed: %d",got)}
  send:=func(body string)*httptest.ResponseRecorder{
   req:=httptest.NewRequest(http.MethodPost,path,strings.NewReader(body))

@@ -1,6 +1,6 @@
-# BackupHub Debian package (v0.1.0 Preview 3)
+# BackupHub Debian package (v0.1.0 Preview 4)
 
-`sudo apt install ./backuphub_0.1.0~preview.3_amd64.deb` creates the
+`sudo apt install ./backuphub_0.1.0~preview.4_amd64.deb` creates the
 dedicated unprivileged system user `backuphub`, initializes state under
 `/var/lib/backuphub`, installs the Go daemon, Svelte UI, an HTTPS service and
 a **separate** root-owned socket-activated `backuphub-storage` helper. Neither
@@ -62,6 +62,29 @@ original protected mode without alteration.
 catalog and off-host repository data. Passwordless storage has no
 `restic-<id>.key`. Keep offline copies of needed keys. Losing one of
 them renders the corresponding protected backup inaccessible.
+
+## Disaster recovery (Preview 4)
+
+The administrator can download a **Recovery Kit** from the dedicated
+**Emergency Recovery** screen. It contains a consistent SQLite snapshot and
+all keys needed for the registered protected repositories, so this ZIP is
+highly sensitive: keep it secure and independent of the backup server.
+It does **not** contain Restic repository data.
+
+On a new installation, the same browser screen attaches an **existing**
+mounted disk without initialization, optionally imports its original key,
+and reconstructs the historical snapshot index from portable Restic commit
+markers. It does **not** fabricate working source credentials or schedules.
+
+To restore the full configuration, stop the service and run
+`backuphub recovery-kit-restore -kit /path/kit.zip -data-dir /new/empty/path`;
+the target must not yet exist. Replace the state directory only after
+manual review, keep a rollback copy, reattach old repository disks and restart.
+When the old primary disk is absent, the server runs in degraded recovery mode
+without reinitializing a replacement repository.
+
+See [disaster recovery guide](../../docs/disaster-recovery.md) for tested
+steps, limitations and warnings.
 
 ## Source limitations
 

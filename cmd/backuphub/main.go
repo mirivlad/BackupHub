@@ -43,7 +43,7 @@ func run(args []string)error{
  command:="serve"
  if len(args)>0 {
   switch args[0] {
-  case "serve","init","bootstrap","setup-admin":
+  case "serve","init","bootstrap","setup-admin","recovery-kit-restore":
    command=args[0];args=args[1:]
   }
  }
@@ -56,9 +56,14 @@ func run(args []string)error{
  tlsKey:=flags.String("tls-key",os.Getenv("BACKUPHUB_TLS_KEY"),"TLS key")
  uiDir:=flags.String("ui-dir","","compiled Svelte UI directory (optional)")
  version:=flags.Bool("version",false,"print version")
+ kitPath:=flags.String("kit","","path to a previously downloaded BackupHub recovery ZIP")
  if err:=flags.Parse(args);err!=nil{return err}
  if flags.NArg()!=0{return fmt.Errorf("unexpected arguments: %v",flags.Args())}
  if *version{fmt.Println("BackupHub",httpapi.Version);return nil}
+ if command=="recovery-kit-restore" {
+  if *kitPath==""{return fmt.Errorf("recovery-kit-restore requires -kit path")}
+  return backup.RestoreRecoveryKit(context.Background(),*kitPath,*dataDir)
+ }
 
  c,err:=catalog.Open(*dataDir)
  if err!=nil{return fmt.Errorf("open catalog: %w",err)}

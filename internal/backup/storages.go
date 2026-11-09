@@ -74,7 +74,11 @@ func (s *Service) ListStorages(ctx context.Context)([]Storage,error){
 }
 
 func (s *Service) repositoryFor(ctx context.Context,id string)(*repository,error){
- if id==""||id==PrimaryStorageID{return s.repo,nil}
+ if id==""||id==PrimaryStorageID{
+  // Reopen the primary repository on every use. In disaster recovery mode
+  // its old disk may be absent; never write into a fake empty replacement.
+  return openRepositoryNamedMode(ctx,s.catalog.DataDir,s.repo.path,s.repo.passwordFile,PasswordMode)
+ }
  if !safeID(id){return nil,errors.New("invalid repository id")}
  var path,mountPath,mode string
  if err:=s.catalog.DB.QueryRowContext(ctx,"SELECT path,mount_path,password_mode FROM storage_repositories WHERE id=?",id).Scan(&path,&mountPath,&mode);err!=nil{return nil,err}
