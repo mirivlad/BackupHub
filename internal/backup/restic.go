@@ -111,6 +111,13 @@ func initRepository(ctx context.Context, stateDir, repoPath string) (*repository
  temp:=&repository{binary:r.binary,path:candidate,passwordFile:r.passwordFile}
  if _,err=temp.run(ctx,nil,"init");err!=nil{return nil,fmt.Errorf("cannot initialize temporary repository: %w",err)}
  if _,err=temp.run(ctx,nil,"snapshots","--json");err!=nil{return nil,fmt.Errorf("cannot verify temporary repository: %w",err)}
+ // A directory with a 'config' and data cannot be renamed over an
+ // existing directory on all supported filesystems. Remove only the empty
+ // placeholder; os.Remove fails closed if files have appeared in it.
+ entries,err=os.ReadDir(r.path)
+ if err!=nil{return nil,err}
+ if len(entries)!=0{return nil,errors.New("repository target changed during initialization")}
+ if err=os.Remove(r.path);err!=nil{return nil,fmt.Errorf("cannot remove empty repository placeholder: %w",err)}
  if err=os.Rename(candidate,r.path);err!=nil{return nil,fmt.Errorf("cannot publish repository: %w",err)}
  published=true
  if err=os.Remove(marker);err!=nil{return nil,err}
