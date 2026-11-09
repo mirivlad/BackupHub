@@ -1,6 +1,6 @@
 # BackupHub — Security Notes
 
-**v0.1.0 Preview 1 provides real backup and restore operations but is not production-hardened.** Use a dedicated internal test host, keep an independent established backup for critical systems, and verify restored content before reliance.
+**v0.1.0 Preview 2 provides real backup and restore operations but is not production-hardened.** Use a dedicated internal test host, keep an independent established backup for critical systems, and verify restored content before reliance.
 
 Controls implemented: Argon2id local passwords, one-time admin bootstrap, hashed database sessions, Secure/HttpOnly/SameSite=Strict cookies, CSRF protection, basic RBAC on source/job/export/restore APIs, authentication rate limits and audit records. Source credentials reside in AES-256-GCM vault outside the SQLite plaintext schema. Restic data is encrypted with a separate private key. Backend includes built-in TLS (initial cert is self-signed) and can sit behind Nginx.
 
@@ -11,3 +11,22 @@ Operate the service only on trusted networks, configure firewall/TLS, preserve `
 To report vulnerabilities, use GitHub private vulnerability reporting if enabled or contact the maintainers privately. Never paste secrets or database contents into public issues.
 
 See [current preview release notes](docs/releases/v0.1.0-preview.1.md) and [full requirements](docs/specification-v0.1.md).
+
+## Mounted storage provisioning (Preview 2)
+
+The Go API remains an unprivileged `backuphub` process. A separate root
+`backuphub-storage.service`, activated through a root:backuphub mode-0660
+Unix socket, can only list directories on eligible mounted volumes and create
+**new** mode-0700 subdirectories owned by `backuphub`. The helper can also
+select an *already private* (mode 0700, owned by backuphub) directory
+without changing its ownership. It cannot rename/remove other files, chown
+existing directories, execute shell commands or listen on TCP.
+
+The server refuses paths with symlink components for privileged traversal.
+Only an authorized BackupHub administrator can use storage configuration
+endpoints. Repositories are recorded in SQLite and every snapshot retains
+its actual repository identifier; disabling/removing a mount fails closed.
+The full threat model of arbitrary mount replacements, NAS filesystem ACLs,
+cross-volume recovery, storage retention and privilege boundaries has **not**
+yet been accepted on all target Debian distributions. Install Preview 2 first
+on a test host and keep independent backups of Restic keys and metadata.

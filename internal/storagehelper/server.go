@@ -40,6 +40,18 @@ func decodeMountPath(p string)string{
  r:=strings.NewReplacer(`\040`," ",`\011`,"\t",`\012`,"\n",`\134`,"\\")
  return r.Replace(p)
 }
+// MountPresent checks the live kernel mount table, not merely directory
+// existence. Called by the unprivileged backup process before every use.
+func MountPresent(mountPath string)bool{
+ if !literalPath(mountPath){return false}
+ data,err:=os.ReadFile("/proc/self/mountinfo")
+ if err!=nil{return false}
+ for _,line:=range strings.Split(string(data),"\n"){
+  fields:=strings.Fields(strings.SplitN(line," - ",2)[0])
+  if len(fields)>4 && decodeMountPath(fields[4])==mountPath{return true}
+ }
+ return false
+}
 func (h *Handler) mounts()([]Mount,error){
  b,err:=os.ReadFile(h.mountinfo)
  if err!=nil{return nil,err}

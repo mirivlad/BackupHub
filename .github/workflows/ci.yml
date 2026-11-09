@@ -148,6 +148,7 @@ jobs:
           unsafe_status="$(curl -ksS -o /tmp/backuphub-unsafe.json -w '%{http_code}' -b "$cookies" "${headers[@]}" -d '{"name":"bad","parent_path":"/etc","folder":"backups"}' "$api/backup/storages")"
           test "$unsafe_status" = "400"
           # Prefer actual mounted storage for a second end-to-end round trip.
+          repo_id=""
           sudo mkdir -p /mnt/backuphub-ci
           if sudo mount --bind /mnt/backuphub-ci /mnt/backuphub-ci; then
             filesystem="$(findmnt -n -o FSTYPE --target /mnt/backuphub-ci)"
@@ -183,6 +184,10 @@ jobs:
               echo "Optional second-volume CI smoke skipped: runner root filesystem is $filesystem"
             fi
             sudo umount /mnt/backuphub-ci
+            if [ -n "$repo_id" ]; then
+              curl -fksS -b "$cookies" "$api/backup/storages" | python3 -c 'import json,sys; a=json.load(sys.stdin)["storages"]; assert any(s["id"]!="primary" and s["status"]=="unavailable" for s in a)'
+              test ! -e /mnt/backuphub-ci/BackupHubCI/repository/config
+            fi
           else
             echo "Optional second-volume CI smoke skipped: bind mounts unavailable"
           fi

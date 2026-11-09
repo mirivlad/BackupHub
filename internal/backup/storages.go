@@ -28,6 +28,7 @@ type Storage struct {
  ID string `json:"id"`
  Name string `json:"name"`
  Path string `json:"path"`
+ MountPath string `json:"mount_path,omitempty"`
  FreeBytes uint64 `json:"free_bytes"`
  Status string `json:"status"`
 }
@@ -51,14 +52,15 @@ func ensurePrimaryStorage(ctx context.Context,c *catalog.Catalog, path string) e
 }
 
 func (s *Service) ListStorages(ctx context.Context)([]Storage,error){
- rows,err:=s.catalog.DB.QueryContext(ctx,"SELECT id,display_name,path FROM storage_repositories ORDER BY created_at,id")
+ rows,err:=s.catalog.DB.QueryContext(ctx,"SELECT id,display_name,path,mount_path FROM storage_repositories ORDER BY created_at,id")
  if err!=nil{return nil,err}
  defer rows.Close()
  out:=[]Storage{}
  for rows.Next(){
   var x Storage
-  if err=rows.Scan(&x.ID,&x.Name,&x.Path);err!=nil{return nil,err}
+  if err=rows.Scan(&x.ID,&x.Name,&x.Path,&x.MountPath);err!=nil{return nil,err}
   var stats syscall.Statfs_t
+  if x.MountPath!=""&&!storagehelper.MountPresent(x.MountPath){x.Status="unavailable";out=append(out,x);continue}
   if e:=syscall.Statfs(x.Path,&stats);e==nil{
    x.FreeBytes=stats.Bavail*uint64(stats.Bsize)
    x.Status="available"
@@ -72,8 +74,9 @@ func (s *Service) ListStorages(ctx context.Context)([]Storage,error){
 func (s *Service) repositoryFor(ctx context.Context,id string)(*repository,error){
  if id==""||id==PrimaryStorageID{return s.repo,nil}
  if !safeID(id){return nil,errors.New("invalid repository id")}
- var path string
- if err:=s.catalog.DB.QueryRowContext(ctx,"SELECT path FROM storage_repositories WHERE id=?",id).Scan(&path);err!=nil{return nil,err}
+ var path,mountPath string
+ if err:=s.catalog.DB.QueryRowContext(ctx,"SELECT path,mount_path FROM storage_repositories WHERE id=?",id).Scan(&path,&mountPath);err!=nil{return nil,err}
+ if mountPath!=""&&!storagehelper.MountPresent(mountPath){return nil,errors.New("storage volume not mounted")}
  if path==s.repo.path{return nil,errors.New("repository overlaps primary storage")}
  key:=filepath.Join(s.catalog.DataDir,"restic-"+id+".key")
  return openRepositoryNamed(ctx,s.catalog.DataDir,path,key)
@@ -88,7 +91,11 @@ func (s *Service) taskRepository(ctx context.Context,scheduleID string)(string,e
 // RegisterStorage is used after privileged directory provisioning, but is
 // also testable with a directory owned by the backuphub service user.
 func (s *Service) RegisterStorage(ctx context.Context,name,repoPath string)(Storage,error){
+ return s.registerStorage(ctx,name,repoPath,"")
+}
+func (s *Service) registerStorage(ctx context.Context,name,repoPath,mountPath string)(Storage,error){
  var empty Storage
+ if mountPath!="" && !storagehelper.MountPresent(mountPath){return empty,errors.New("storage volume is not mounted")}
  if strings.TrimSpace(name)==""||len(name)>120||strings.ContainsAny(name,"\x00\r\n"){return empty,errors.New("invalid storage name")}
  if !filepath.IsAbs(repoPath)||filepath.Clean(repoPath)=="/"{return empty,errors.New("storage path must be absolute")}
  repoPath=filepath.Clean(repoPath)
@@ -123,9 +130,9 @@ func (s *Service) RegisterStorage(ctx context.Context,name,repoPath string)(Stor
  key:=filepath.Join(s.catalog.DataDir,"restic-"+id+".key")
  marker:="restic."+id+".init-in-progress"
  if _,err=initRepositoryNamed(ctx,s.catalog.DataDir,repoPath,key,marker);err!=nil{return empty,err}
- _,err=s.catalog.DB.ExecContext(ctx,"INSERT INTO storage_repositories(id,display_name,path,created_at) VALUES(?,?,?,?)",id,name,repoPath,time.Now().UTC().Format(time.RFC3339Nano))
+ _,err=s.catalog.DB.ExecContext(ctx,"INSERT INTO storage_repositories(id,display_name,path,mount_path,created_at) VALUES(?,?,?,?,?)",id,name,repoPath,mountPath,time.Now().UTC().Format(time.RFC3339Nano))
  if err!=nil{return empty,err}
- return Storage{ID:id,Name:name,Path:repoPath,Status:"available"},nil
+ return Storage{ID:id,Name:name,Path:repoPath,MountPath:mountPath,Status:"available"},nil
 }
 
 func (s *Service) ProvisionStorage(ctx context.Context,in CreateStorage)(Storage,error){
@@ -134,8 +141,16 @@ func (s *Service) ProvisionStorage(ctx context.Context,in CreateStorage)(Storage
  client:=storagehelper.NewClient("/run/backuphub-storage.sock")
  directory,err:=client.Provision(ctx,in.ParentPath,in.Folder)
  if err!=nil{return empty,err}
- // The helper creates a brand-new private directory owned by backuphub.
- return s.RegisterStorage(ctx,in.Name,filepath.Join(directory,"repository"))
+ // Require the selected location to remain on the actual mounted volume,
+ // not the system filesystem exposed after an unmount.
+ mounts,err:=client.Mounts(ctx)
+ if err!=nil{return empty,err}
+ chosen:=""
+ for _,m:=range mounts{
+  if (directory==m.Path||strings.HasPrefix(directory,m.Path+"/"))&&len(m.Path)>len(chosen){chosen=m.Path}
+ }
+ if chosen==""||!storagehelper.MountPresent(chosen){return empty,errors.New("destination volume disconnected during provisioning")}
+ return s.registerStorage(ctx,in.Name,filepath.Join(directory,"repository"),chosen)
 }
 
 func (s *Service) StorageMounts(ctx context.Context)([]storagehelper.Mount,error){

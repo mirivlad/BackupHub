@@ -121,6 +121,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
       id TEXT PRIMARY KEY,
       display_name TEXT NOT NULL UNIQUE,
       path TEXT NOT NULL UNIQUE,
+      mount_path TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL
    )`,
    `INSERT INTO storage_repositories(id,display_name,path,created_at)
