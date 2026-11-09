@@ -79,9 +79,9 @@ func (s *Service) repositoryFor(ctx context.Context,id string)(*repository,error
  return openRepositoryNamed(ctx,s.catalog.DataDir,path,key)
 }
 
-func (s *Service) sourceRepository(ctx context.Context,sourceID string)(string,error){
+func (s *Service) taskRepository(ctx context.Context,scheduleID string)(string,error){
  var repoID string
- err:=s.catalog.DB.QueryRowContext(ctx,"SELECT repository_id FROM source_repositories WHERE source_id=?",sourceID).Scan(&repoID)
+ err:=s.catalog.DB.QueryRowContext(ctx,"SELECT repository_id FROM schedule_repositories WHERE schedule_id=?",scheduleID).Scan(&repoID)
  return repoID,err
 }
 
@@ -151,8 +151,8 @@ func (s *Service) SelectSourceStorage(ctx context.Context,sourceID,storageID str
  // snapshot.repository_id for every historical copy.
  if _,err:=s.repositoryFor(ctx,storageID);err!=nil{return err}
  // Don't switch the destination while an execution is underway.
- result,err:=s.catalog.DB.ExecContext(ctx,`UPDATE source_repositories SET repository_id=?
- WHERE source_id=? AND EXISTS(
+ result,err:=s.catalog.DB.ExecContext(ctx,`UPDATE schedule_repositories SET repository_id=?
+ WHERE schedule_id=? AND EXISTS(
  SELECT 1 FROM schedule_entries WHERE id=? AND active_run_id IS NULL
  )`,storageID,sourceID,sourceID)
  if err!=nil{return err}

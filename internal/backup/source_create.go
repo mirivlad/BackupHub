@@ -41,10 +41,11 @@ func (s *Service) Create(ctx context.Context, input CreateSource) (Source,error)
  defer tx.Rollback()
  now:=time.Now().UTC().Format(time.RFC3339Nano)
  _,err=tx.ExecContext(ctx,"INSERT INTO sources(id,kind,display_name,endpoint,secret_ref,settings_json,created_at) VALUES(?,?,?,?,?,?,?)",id,input.Kind,input.Name,input.Host,nullable(ref),string(encoded),now)
- if err==nil{_,err=tx.ExecContext(ctx,"INSERT INTO source_repositories(source_id,repository_id) VALUES(?,?)",id,input.RepositoryID)}
+
  if err==nil{_,err=tx.ExecContext(ctx,"INSERT INTO datasets(id,source_id,display_name,locator) VALUES(?,?,?,?)",id,id,input.Name,input.Path)}
  if err==nil{_,err=tx.ExecContext(ctx,"INSERT INTO jobs(id,dataset_id,schedule_json,created_at) VALUES(?,?,?,?)",id,id,fmt.Sprintf("{\"interval_minutes\":%d}",input.IntervalMinutes),now)}
  if err==nil{_,err=tx.ExecContext(ctx,"INSERT INTO schedule_entries(id,dataset_id,kind,interval_seconds,next_run_unix,enabled,created_at) VALUES(?,?,?,?,?,?,?)",id,id,"backup",input.IntervalMinutes*60,time.Now().UTC().Add(time.Minute).Unix(),1,now)}
+ if err==nil{_,err=tx.ExecContext(ctx,"INSERT INTO schedule_repositories(schedule_id,repository_id) VALUES(?,?)",id,input.RepositoryID)}
  if err==nil{err=tx.Commit()}
  if err!=nil{if ref!=""{_ =s.vault.Delete(ctx,ref)};return empty,err}
  s.notify()

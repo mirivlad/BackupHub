@@ -91,7 +91,7 @@ func validFolder(name string)bool{
 }
 func(h *Handler) provision(parent,folder string)(string,error){
  if err:=h.validateStoragePath(parent);err!=nil{return "",err}
- if !validFolder(folder){return "",errors.New("folder must contain only letters, digits, dash, dot or underscore (1-64 characters)")}
+ if folder!=""&&!validFolder(folder){return "",errors.New("invalid folder name")}
  fd,err:=openPathNoFollow(parent)
  if err!=nil{return "",err}
  defer unix.Close(fd)
@@ -99,6 +99,16 @@ func(h *Handler) provision(parent,folder string)(string,error){
  if err!=nil{return "",err}
  uid,err:=strconv.Atoi(acct.Uid);if err!=nil{return "",err}
  gid,err:=strconv.Atoi(acct.Gid);if err!=nil{return "",err}
+ if folder==""{
+  // Reuse an already secure directory. Never grant ourselves access by
+  // chowning or chmodding arbitrary existing content.
+  var stat unix.Stat_t
+  if err=unix.Fstat(fd,&stat);err!=nil{return "",err}
+  if stat.Uid!=uint32(uid)||stat.Gid!=uint32(gid)||stat.Mode&0777!=0700{
+   return "",errors.New("existing directory must already be private and owned by backuphub; otherwise choose Create new folder")
+  }
+  return parent,nil
+ }
  // Existing directories are never chmodded or chowned.
  if err=unix.Mkdirat(fd,folder,0700);err!=nil{
   if errors.Is(err,unix.EEXIST){return "",errors.New("destination folder already exists; choose a fresh folder name")}

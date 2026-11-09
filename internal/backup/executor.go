@@ -17,7 +17,7 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 		return err
 	}
 	if t.Kind != "backup" {return errors.New("unsupported executor kind")}
- repoID,err:=s.sourceRepository(ctx,source.ID)
+ repoID,err:=s.taskRepository(ctx,t.ID)
  if err!=nil{return fmt.Errorf("missing destination storage: %w",err)}
  destination,err:=s.repositoryFor(ctx,repoID)
  if err!=nil{return fmt.Errorf("%w: storage offline",scheduler.ErrSourceUnavailable)}

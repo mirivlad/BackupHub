@@ -125,11 +125,11 @@ func migrate(ctx context.Context, db *sql.DB) error {
    )`,
    `INSERT INTO storage_repositories(id,display_name,path,created_at)
      VALUES('primary','Встроенное хранилище','',CURRENT_TIMESTAMP)`,
-   `CREATE TABLE source_repositories (
-      source_id TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE RESTRICT,
+   `CREATE TABLE schedule_repositories (
+      schedule_id TEXT PRIMARY KEY REFERENCES schedule_entries(id) ON DELETE RESTRICT,
       repository_id TEXT NOT NULL REFERENCES storage_repositories(id) ON DELETE RESTRICT
    )`,
-   `INSERT INTO source_repositories(source_id,repository_id) SELECT id,'primary' FROM sources`,
+   `INSERT INTO schedule_repositories(schedule_id,repository_id) SELECT id,'primary' FROM schedule_entries WHERE kind='backup'`,
   }
   for _,statement:=range statements {if _,err=tx.ExecContext(ctx,statement);err!=nil{return fmt.Errorf("v5 storage migration: %w",err)}}
  }

@@ -66,8 +66,29 @@ func TestMigrateFromV1PreservesIdentity(t *testing.T){
  upgraded,err:=Open(dir);if err!=nil{t.Fatal(err)}
  defer upgraded.Close()
  if upgraded.InstanceID!=original{t.Fatal("instance UUID lost during migration")}
- var storageID string
- if err=upgraded.DB.QueryRow("SELECT repository_id FROM source_repositories WHERE source_id='legacy-source'").Scan(&storageID);err!=nil||storageID!="primary"{t.Fatalf("legacy source destination lost: id=%s err=%v",storageID,err)}
+
  var count int
  if err=upgraded.DB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE name='vault_secrets'").Scan(&count);err!=nil||count!=1{t.Fatalf("v2 migration missing: %v",err)}
+}
+
+func TestV4ToV5PreservesBackupScheduleDestination(t *testing.T){
+ dir:=t.TempDir()
+ if err:=os.Chmod(dir,0700);err!=nil{t.Fatal(err)}
+ c,err:=Open(dir)
+ if err!=nil{t.Fatal(err)}
+ _,err=c.DB.Exec("INSERT INTO sources(id,kind,display_name,endpoint,settings_json,created_at) VALUES('source-v4','local','Demo','','{}','2026-11-01T00:00:00Z')")
+ if err!=nil{t.Fatal(err)}
+ _,err=c.DB.Exec("INSERT INTO datasets(id,source_id,display_name,locator) VALUES('source-v4','source-v4','Demo','/tmp/demo')")
+ if err!=nil{t.Fatal(err)}
+ _,err=c.DB.Exec("INSERT INTO schedule_entries(id,dataset_id,kind,interval_seconds,next_run_unix,enabled,created_at) VALUES('schedule-v4','source-v4','backup',3600,100,1,'2026-11-01T00:00:00Z')")
+ if err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("DROP TABLE schedule_repositories");err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("DROP TABLE storage_repositories");err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("PRAGMA user_version=4");err!=nil{t.Fatal(err)}
+ if err=c.Close();err!=nil{t.Fatal(err)}
+ migrated,err:=Open(dir)
+ if err!=nil{t.Fatal(err)}
+ defer migrated.Close()
+ var got string
+ if err=migrated.DB.QueryRow("SELECT repository_id FROM schedule_repositories WHERE schedule_id='schedule-v4'").Scan(&got);err!=nil||got!="primary"{t.Fatalf("existing task repository lost: %q err=%v",got,err)}
 }

@@ -11,6 +11,7 @@
  let selectedMount=$state('');
  let storageName=$state('');
  let folder=$state('BackupHub');
+ let useExisting=$state(false);
  let busy=$state(false);
  let error=$state('');
  let notice=$state('');
@@ -42,9 +43,9 @@
  async function create(){
   busy=true;error='';notice='';
   try{
-   const created=await request<Storage>('/storages',{method:'POST',headers:{'Content-Type':'application/json','X-BackupHub-CSRF':csrf()},body:JSON.stringify({name:storageName,parent_path:chosen,folder})});
+   const created=await request<Storage>('/storages',{method:'POST',headers:{'Content-Type':'application/json','X-BackupHub-CSRF':csrf()},body:JSON.stringify({name:storageName,parent_path:chosen,folder:useExisting?'':folder})});
    notice='Хранилище «'+created.name+'» подключено: '+created.path;
-   storageName='';folder='BackupHub';
+   storageName='';folder='BackupHub';useExisting=false;
    await load();await onCreated();
   }catch(e){error=e instanceof Error?e.message:'Не удалось создать хранилище';}
   finally{busy=false;}
@@ -88,8 +89,11 @@
     </div>
     <form class="storage-form" onsubmit={(event)=>{event.preventDefault();void create();}}>
      <label>Название хранилища<input required maxlength="120" bind:value={storageName} placeholder="Архив на диске 1"/></label>
-     <label>Новая папка<input required minlength="1" maxlength="64" bind:value={folder}/></label>
-     <button type="submit" disabled={busy||!chosen}>Создать папку и подключить хранилище</button>
+     <label class="storage-checkbox"><input type="checkbox" bind:checked={useExisting}/> Использовать выбранную папку без создания новой (только если она уже принадлежит backuphub и имеет права 0700)</label>
+     {#if !useExisting}
+      <label>Новая папка<input required minlength="1" maxlength="64" bind:value={folder}/></label>
+     {/if}
+     <button type="submit" disabled={busy||!chosen}>{useExisting?'Подключить выбранную папку':'Создать папку и подключить хранилище'}</button>
     </form>
    </div>
   {/if}
@@ -102,5 +106,5 @@
  .mount-list{display:flex;gap:9px;flex-wrap:wrap}.mount-list button{white-space:normal;text-align:left}
  .storage-browser{margin-top:14px;border:1px solid #405474;border-radius:9px;padding:14px}.storage-folders{display:flex;gap:8px;flex-wrap:wrap;max-height:210px;overflow:auto;margin-bottom:14px}
  .storage-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;align-items:end}
- .storage-form label{display:grid;gap:6px}.storage-form input{background:#172338;color:#eee;border:1px solid #405474;border-radius:7px;padding:10px;min-width:0;width:100%}
+ .storage-form label{display:grid;gap:6px}.storage-checkbox{grid-column:1/-1;display:flex!important;flex-direction:row;align-items:center}.storage-checkbox input{width:auto!important}.storage-form input{background:#172338;color:#eee;border:1px solid #405474;border-radius:7px;padding:10px;min-width:0;width:100%}
 </style>
