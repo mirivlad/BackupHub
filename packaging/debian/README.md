@@ -71,6 +71,6 @@ Build locally:
 ```bash
 npm ci --prefix web
 npm run build --prefix web
-go build -o dist/backuphub ./cmd/backuphub
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/backuphub ./cmd/backuphub
 sh packaging/debian/build.sh
 ```
