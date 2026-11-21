@@ -219,7 +219,10 @@ func (s *Scheduler) RunDue(ctx context.Context) (bool, error) {
 		executeErr = fmt.Errorf("cannot finish job %s: %w", runID, err)
 	}
 	completed := s.now()
-	nextRun := completed.Add(t.Interval)
+	nextRun, nextErr := s.nextRun(context.Background(), t.ID, completed, t.Interval)
+	if nextErr != nil {
+		return true, fmt.Errorf("calculate next schedule: %w", nextErr)
+	}
 	if finalState == domain.JobWaiting {
 		nextRun = completed.Add(min(t.Interval, retryDelay))
 	}

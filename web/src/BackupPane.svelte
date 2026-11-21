@@ -1,164 +1,264 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import StoragePane from './StoragePane.svelte';
-
-  type Role = string;
-  type Source = { id:string; name:string; kind:string; host:string; share:string; path:string; username:string; database:string; interval_minutes:number; repository_id:string; enabled:boolean; next_run:string };
-  type Storage = {id:string;name:string;path:string;free_bytes:number;status:string};
-  type Snapshot = { id:string; source_id:string; source_name:string; kind:string; created_at:string; verification:string; fidelity:string; consistency:string };
-  type Run = { id:string; task_id:string; state:string; started_at:string; finished_at?:string; failure_code?:string };
-  type File = { path:string; name:string; type:string; size:number; modified:string };
-  let { role }: {role:Role} = $props();
-  let sources = $state<Source[]>([]);
-  let storages = $state<Storage[]>([]);
-  let snapshots = $state<Snapshot[]>([]);
-  let runs = $state<Run[]>([]);
-  let files = $state<File[]>([]);
-  let activeSnapshot = $state<Snapshot|null>(null);
-  let selection = $state<string[]>([]);
-  let filter = $state('');
-  let busy = $state(false);
-  let message = $state('');
-  let error = $state('');
-  let editor = $state(false);
-  let form = $state({name:'',kind:'smb',host:'',share:'',path:'',username:'',password:'',database:'',interval_minutes:1440,repository_id:'primary'});
-  const canConfigure = $derived(role === 'administrator');
-  const canRun = $derived(role === 'administrator' || role === 'backup_operator');
-  const canExport = $derived(role === 'administrator' || role === 'restore_operator');
-  let visibleFiles = $derived(files.filter(file=>!filter || file.path.toLocaleLowerCase('ru-RU').includes(filter.toLocaleLowerCase('ru-RU'))));
-  function datetime(value: string): string {const date = new Date(value);return Number.isNaN(date.getTime())?value:date.toLocaleString('ru-RU');}
-  function csrf():string{return decodeURIComponent(document.cookie.split('; ').find(c=>c.startsWith('backuphub_csrf='))?.slice('backuphub_csrf='.length)??'');}
-  async function api<T>(path:string,init:RequestInit={}):Promise<T>{
-    const response=await fetch('/api/v1/backup'+path,{credentials:'same-origin',...init});
-    const json:unknown=await response.json().catch(()=>null);
-    if(!response.ok){const msg=json&&typeof json==='object'&&'error' in json?String((json as {error:unknown}).error):`HTTP ${response.status}`;throw new Error(msg);}
-    return json as T;
-  }
-  function jsonBody(value:unknown):RequestInit{return {method:'POST',headers:{'Content-Type':'application/json','X-BackupHub-CSRF':csrf()},body:JSON.stringify(value)};}
-  function postNoBody():RequestInit{return {method:'POST',headers:{'X-BackupHub-CSRF':csrf()}};}
-  async function refresh(){
-    busy=true;error='';
-    try{
-      const [a,b,c,d]=await Promise.all([api<{sources:Source[]}>('/sources'),api<{snapshots:Snapshot[]}>('/snapshots'),api<{runs:Run[]}>('/runs'),api<{storages:Storage[]}>('/storages')]);
-      sources=a.sources;snapshots=b.snapshots;runs=c.runs;storages=d.storages;
-    }catch(e){error=e instanceof Error?e.message:'Ошибка загрузки';}
-    finally{busy=false;}
-  }
-  async function create(){
-    busy=true;error='';message='';
-    try{
-      const result=await api<Source>('/sources',jsonBody(form));
-      message=`Источник «${result.name}» создан. Копирование по расписанию начнётся после наступления времени задания.`;
-      form={name:'',kind:'smb',host:'',share:'',path:'',username:'',password:'',database:'',interval_minutes:1440,repository_id:'primary'};
-      editor=false;await refresh();
-    }catch(e){error=e instanceof Error?e.message:'Не удалось добавить источник';}
-    finally{busy=false;}
-  }
-  async function act(id:string,action:'run'|'pause'|'resume'){
-    busy=true;error='';message='';
-    try{await api(`/sources/${encodeURIComponent(id)}/${action}`,postNoBody());message=action==='run'?'Задание поставлено в очередь. Проверьте журнал запусков.':'Расписание обновлено.';await refresh();}
-    catch(e){error=e instanceof Error?e.message:'Операция не выполнена';}finally{busy=false;}
-  }
-  async function changeStorage(source:Source,repositoryID:string){
-    busy=true;error='';message='';
-    try{
-      await api(`/sources/${encodeURIComponent(source.id)}/storage`,jsonBody({repository_id:repositoryID}));
-      message='Хранилище для следующих снимков изменено. Старые снимки остаются в прежнем репозитории.';
-      await refresh();
-    }catch(e){error=e instanceof Error?e.message:'Хранилище не изменено';}
-    finally{busy=false;}
-  }
-  async function openSnapshot(snap:Snapshot){
-    busy=true;error='';message='';
-    try{const data=await api<{files:File[]}>(`/snapshots/${encodeURIComponent(snap.id)}/files`);activeSnapshot=snap;files=data.files;selection=[];filter='';}
-    catch(e){error=e instanceof Error?e.message:'Невозможно открыть снимок';}finally{busy=false;}
-  }
-  function selected(path:string){selection=selection.includes(path)?selection.filter(x=>x!==path):[...selection,path];}
-  function download(paths:string[],single=false){
-    if(!activeSnapshot)return;
-    const qs=new URLSearchParams();for(const path of paths){qs.append('path',path)}
-    if(single){qs.set('mode','single')}
-    window.location.assign(`/api/v1/backup/snapshots/${encodeURIComponent(activeSnapshot.id)}/download?${qs.toString()}`);
-  }
-  async function restore(){
-    if(!activeSnapshot)return;
-    if(!window.confirm('Восстановить выбранные файлы в новый отдельный каталог на сервере? Существующие файлы не изменяются.'))return;
-    busy=true;error='';message='';
-    try{
-      const result=await api<{directory:string}>(`/snapshots/${activeSnapshot.id}/restore`,jsonBody({paths:selection}));
-      message=`Данные восстановлены в отдельный каталог сервера: ${result.directory}`;
-    }catch(e){error=e instanceof Error?e.message:'Ошибка восстановления';}finally{busy=false;}
-  }
-  onMount(()=>{void refresh();});
+ import {onMount} from 'svelte';
+ import StoragePane from './StoragePane.svelte';
+ type Section='overview'|'jobs'|'sources'|'storages'|'schedules'|'history'|'runs';
+ type Source={id:string;name:string;kind:string;host:string;share:string;path:string;username:string;database:string;repository_id:string;interval_minutes:number};
+ type Storage={id:string;name:string;path:string;free_bytes:number;status:string;password_mode:string};
+ type Profile={id:string;name:string;mode:'interval'|'daily'|'weekly';interval_minutes:number;days_of_week:string;hour:number;minute:number;timezone:string};
+ type Job={id:string;name:string;source_id:string;source_name:string;repository_id:string;schedule_id:string;schedule_name:string;enabled:boolean;next_run:string};
+ type Snapshot={id:string;source_id:string;source_name:string;kind:string;created_at:string;verification:string;fidelity:string;consistency:string};
+ type Run={id:string;task_id:string;state:string;started_at:string;finished_at?:string;failure_code?:string};
+ type File={path:string;name:string;type:string;size:number;modified:string};
+ let {section,role,onNavigate}:{section:Section;role:string;onNavigate:(section:Section)=>void}=$props();
+ let sources=$state<Source[]>([]);
+ let storages=$state<Storage[]>([]);
+ let schedules=$state<Profile[]>([]);
+ let jobs=$state<Job[]>([]);
+ let snapshots=$state<Snapshot[]>([]);
+ let runs=$state<Run[]>([]);
+ let files=$state<File[]>([]);
+ let activeSnapshot=$state<Snapshot|null>(null);
+ let selection=$state<string[]>([]);
+ let filter=$state('');
+ let busy=$state(false);
+ let loaded=$state(false);
+ let error=$state('');
+ let notice=$state('');
+ let editing=$state(false);
+ let sourceForm=$state({name:'',kind:'smb',host:'',share:'',path:'',username:'',password:'',database:''});
+ let jobForm=$state({name:'',source_id:'',repository_id:'',schedule_id:''});
+ let scheduleForm=$state({name:'',mode:'daily' as 'daily'|'weekly'|'interval',time:'02:00',timezone:'UTC',interval:1,unit:'days',weekdays:[1,2,3,4,5] as number[]});
+ const weekdays=[{id:1,label:'Пн'},{id:2,label:'Вт'},{id:3,label:'Ср'},{id:4,label:'Чт'},{id:5,label:'Пт'},{id:6,label:'Сб'},{id:0,label:'Вс'}];
+ const canConfigure=$derived(role==='administrator');
+ const canRun=$derived(role==='administrator'||role==='backup_operator');
+ const canExport=$derived(role==='administrator'||role==='restore_operator');
+ const visibleFiles=$derived(files.filter(f=>!filter||f.path.toLocaleLowerCase('ru-RU').includes(filter.toLocaleLowerCase('ru-RU'))));
+ const availableStorages=$derived(storages.filter(s=>s.status==='available'));
+ const activeJobs=$derived(jobs.filter(j=>j.enabled));
+ const failedRuns=$derived(runs.filter(r=>r.state==='failed'||r.state==='interrupted'));
+ const fmt=(v:string)=>{if(!v)return '—';const d=new Date(v);return Number.isNaN(d.getTime())?'—':d.toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'});};
+ const size=(bytes:number)=>new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(bytes/1073741824)+' ГиБ';
+ function sourceType(kind:string){return ({smb:'SMB',sftp:'SFTP',postgres:'PostgreSQL',local:'Локальный каталог'} as Record<string,string>)[kind]??kind;}
+ function sourcePath(s:Source){return s.kind==='smb'?'//'+s.host+'/'+s.share+(s.path?'/'+s.path:''):s.kind==='postgres'?s.host+'/'+s.database:s.kind==='sftp'?s.host+':'+s.path:s.path;}
+ function stateLabel(state:string){return ({completed:'Завершено',completed_with_warnings:'С предупреждениями',failed:'Ошибка',queued:'В очереди',preflight:'Проверка',preparing:'Подготовка',capturing:'Копирование',committing:'Сохранение',verifying:'Проверка данных',waiting_for_source:'Ожидание источника',interrupted:'Прервано',cancelled:'Отменено'} as Record<string,string>)[state]??state;}
+ function scheduleText(p:Profile){if(p.mode==='interval'){const n=p.interval_minutes;return n%1440===0?'Каждые '+(n/1440)+' дн.':n%60===0?'Каждые '+(n/60)+' ч.':'Каждые '+n+' мин.';}
+  const at=String(p.hour).padStart(2,'0')+':'+String(p.minute).padStart(2,'0');
+  if(p.mode==='daily')return 'Ежедневно в '+at;
+  return p.days_of_week.split(',').map(n=>weekdays.find(x=>x.id===Number(n))?.label??n).join(', ')+' · '+at;
+ }
+ function csrf(){return decodeURIComponent(document.cookie.split('; ').find(c=>c.startsWith('backuphub_csrf='))?.slice('backuphub_csrf='.length)??'');}
+ async function api<T>(path:string,opts:RequestInit={}):Promise<T>{const r=await fetch('/api/v1/backup'+path,{credentials:'same-origin',...opts});const body=await r.json().catch(()=>null);
+  if(!r.ok)throw new Error(body?.error??'Ошибка запроса: HTTP '+r.status);return body as T;}
+ function jsonBody(value:unknown):RequestInit{return {method:'POST',headers:{'Content-Type':'application/json','X-BackupHub-CSRF':csrf()},body:JSON.stringify(value)};}
+ function actionBody():RequestInit{return {method:'POST',headers:{'X-BackupHub-CSRF':csrf()}};}
+ async function refresh(){busy=true;error='';
+  try{const [a,b,c,d,e,f]=await Promise.all([
+   api<{sources:Source[]}>('/sources'),api<{storages:Storage[]}>('/storages'),api<{schedules:Profile[]}>('/schedules'),
+   api<{jobs:Job[]}>('/jobs'),api<{snapshots:Snapshot[]}>('/snapshots'),api<{runs:Run[]}>('/runs')]);
+   sources=a.sources;storages=b.storages;schedules=c.schedules;jobs=d.jobs;snapshots=e.snapshots;runs=f.runs;loaded=true;
+  }catch(e){error=e instanceof Error?e.message:'Данные недоступны';}
+  finally{busy=false;}
+ }
+ async function runAction(fn:()=>Promise<void>){busy=true;error='';notice='';
+  try{await fn();editing=false;await refresh();}catch(e){error=e instanceof Error?e.message:'Операция не выполнена';}
+  finally{busy=false;}
+ }
+ async function createSource(){await runAction(async()=>{const v=await api<Source>('/sources',jsonBody(sourceForm));notice='Источник «'+v.name+'» добавлен';sourceForm={name:'',kind:'smb',host:'',share:'',path:'',username:'',password:'',database:''};});}
+ async function createSchedule(){await runAction(async()=>{const [h,m]=scheduleForm.time.split(':').map(Number);
+  let interval=scheduleForm.interval*(scheduleForm.unit==='days'?1440:scheduleForm.unit==='hours'?60:1);
+  const days=scheduleForm.mode==='weekly'?weekdays.filter(x=>scheduleForm.weekdays.includes(x.id)).map(x=>x.id).join(','):'';
+  const v=await api<Profile>('/schedules',jsonBody({name:scheduleForm.name,mode:scheduleForm.mode,hour:h,minute:m,days_of_week:days,timezone:scheduleForm.timezone,interval_minutes:scheduleForm.mode==='interval'?interval:0}));
+  notice='Расписание «'+v.name+'» создано';scheduleForm.name='';
+ });}
+ async function createJob(){await runAction(async()=>{const v=await api<Job>('/jobs',jsonBody(jobForm));notice='Задание «'+v.name+'» создано';jobForm={name:'',source_id:'',repository_id:'',schedule_id:''};});}
+ async function jobAction(id:string,op:'run'|'pause'|'resume'){await runAction(async()=>{await api('/jobs/'+encodeURIComponent(id)+'/'+op,actionBody());notice=op==='run'?'Задание поставлено в очередь':op==='pause'?'Задание приостановлено':'Задание включено';});}
+ async function deleteSchedule(id:string){if(!window.confirm('Удалить неиспользуемое расписание?'))return;await runAction(async()=>{await api('/schedules/'+encodeURIComponent(id),{method:'DELETE',headers:{'X-BackupHub-CSRF':csrf()}});notice='Расписание удалено';});}
+ async function openSnapshot(s:Snapshot){busy=true;error='';try{const v=await api<{files:File[]}>('/snapshots/'+encodeURIComponent(s.id)+'/files');files=v.files;activeSnapshot=s;selection=[];filter='';}
+ catch(e){error=e instanceof Error?e.message:'Не удалось открыть снимок';}finally{busy=false;}}
+ function toggleFile(path:string){selection=selection.includes(path)?selection.filter(x=>x!==path):[...selection,path];}
+ function download(paths:string[],single=false){if(!activeSnapshot)return;const q=new URLSearchParams();for(const p of paths)q.append('path',p);if(single)q.set('mode','single');window.location.assign('/api/v1/backup/snapshots/'+encodeURIComponent(activeSnapshot.id)+'/download?'+q.toString());}
+ async function restore(){if(!activeSnapshot||!window.confirm('Восстановить выбранное в новый каталог сервера? Существующие файлы не будут затронуты.'))return;
+  await runAction(async()=>{const r=await api<{directory:string}>('/snapshots/'+encodeURIComponent(activeSnapshot!.id)+'/restore',jsonBody({paths:selection}));notice='Восстановлено в '+r.directory;});}
+ function weekdayToggle(day:number,checked:boolean){scheduleForm.weekdays=checked?[...scheduleForm.weekdays,day]:scheduleForm.weekdays.filter(n=>n!==day);}
+ onMount(()=>{scheduleForm.timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC';void refresh();});
+ $effect(()=>{if(section){editing=false;}});
 </script>
 
-<section class="backup-workspace">
-  <div class="heading"><div><span class="eyebrow">РЕЗЕРВНОЕ КОПИРОВАНИЕ</span><h1>Источники и история</h1><p class="secondary">Файловые снимки Restic, история версий и восстановление из конкретной даты.</p></div><button class="outline" onclick={()=>void refresh()} disabled={busy}>Обновить</button></div>
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
-  {#if message}<p class="notice" role="status">{message}</p>{/if}
-  <div class="warning"><strong>Предварительная версия.</strong><span>Копирование SMB/SFTP — без гарантии ACL и согласованности открытых файлов. PostgreSQL сохраняется как логический дамп. Нативный профиль PostgreSQL Pro 1C и AD пока не поддерживаются.</span></div>
-  {#if canConfigure}<StoragePane onCreated={refresh}/>{/if}
-  <section class="detail-card">
-    <div class="backup-heading"><h2>Источники</h2>{#if canConfigure}<button class="outline" onclick={()=>editor=!editor}>{editor?'Закрыть':'Добавить источник'}</button>{/if}</div>
-    {#if editor && canConfigure}
-      <form class="backup-form" onsubmit={(event)=>{event.preventDefault();void create();}}>
-        <label>Название <input bind:value={form.name} maxlength="120" required placeholder="Общая папка отдела" /></label>
-        <label>Тип <select bind:value={form.kind}><option value="smb">SMB2/3 — сетевая шара</option><option value="sftp">Linux SSH/SFTP</option><option value="local">Локальный каталог</option><option value="postgres">PostgreSQL — обычная БД</option></select></label>
-        {#if form.kind !== 'local'}
-          <label>Сервер <input bind:value={form.host} required placeholder={form.kind==='smb'?'fileserver.example.com':form.kind==='sftp'?'linux.example.com:22':'postgres.example.com:5432'} /></label>
-          <label>Пользователь <input bind:value={form.username} required autocomplete="off" /></label>
-          <label>Пароль <input type="password" bind:value={form.password} required autocomplete="new-password" /></label>
-        {/if}
-        {#if form.kind==='smb'}
-          <label>Шара <input bind:value={form.share} required placeholder="Shared" /></label>
-          <label>Подкаталог (необязательно) <input bind:value={form.path} placeholder="Department/Video" /></label>
-        {:else if form.kind==='sftp'}
-          <label>Путь на сервере <input bind:value={form.path} required placeholder="/srv/data" /></label>
-          <p class="secondary">Для SFTP проверка SSH host key обязательна: добавьте ключ сервера в /etc/backuphub/known_hosts.</p>
-        {:else if form.kind==='local'}
-          <label>Абсолютный путь на BackupHub <input bind:value={form.path} required placeholder="/srv/data" /></label>
-        {:else}
-          <label>Название базы <input bind:value={form.database} required placeholder="production" /></label>
-          <p class="secondary">Только обычный pg_dump. Для PostgreSQL Pro 1C с большой public.config нужен отдельный профиль (ещё не готов).</p>
-        {/if}
-        <label>Хранилище назначения <select bind:value={form.repository_id} required>{#each storages.filter(x=>x.status==='available') as storage (storage.id)}<option value={storage.id}>{storage.name} · {storage.path}</option>{/each}</select></label>
-        <label>Интервал (минуты) <input type="number" bind:value={form.interval_minutes} min="5" max="525600" required /></label>
-        <button type="submit" disabled={busy}>Сохранить источник</button>
-      </form>
-    {/if}
-    {#if sources.length===0}<p class="secondary">Источников пока нет. Добавьте первый, чтобы создать расписание.</p>{:else}
-      <div class="table-scroll"><table><thead><tr><th>Источник</th><th>Тип</th><th>Период</th><th>Хранилище</th><th>Следующее выполнение</th><th>Действия</th></tr></thead><tbody>
-      {#each sources as source (source.id)}<tr><td><strong>{source.name}</strong><small class="source-location">{source.kind==='smb'?`//${source.host}/${source.share}/${source.path}`:source.kind==='postgres'?`${source.host}/${source.database}`:source.path}</small></td><td>{source.kind}</td><td>{source.interval_minutes} мин.</td><td>{#if canConfigure}<select disabled={busy} value={source.repository_id} onchange={(e)=>void changeStorage(source,e.currentTarget.value)}>{#each storages as storage (storage.id)}<option value={storage.id}>{storage.name}</option>{/each}</select>{:else}{storages.find(x=>x.id===source.repository_id)?.name??source.repository_id}{/if}</td><td>{source.enabled?datetime(source.next_run):'Приостановлено'}</td><td class="action-cell">{#if canRun}<button class="outline" onclick={()=>void act(source.id,'run')} disabled={busy}>Запустить</button>{/if}{#if canConfigure}<button class="text-button" onclick={()=>void act(source.id,source.enabled?'pause':'resume')} disabled={busy}>{source.enabled?'Пауза':'Включить'}</button>{/if}</td></tr>{/each}
-      </tbody></table></div>
-    {/if}
-  </section>
-  <section class="detail-card">
-    <h2>История резервных копий</h2>
-    {#if snapshots.length===0}<p class="secondary">Пока нет завершённых снимков. Убедитесь, что источник доступен, и выполните задание.</p>{:else}
-      <div class="table-scroll"><table><thead><tr><th>Дата</th><th>Источник</th><th>Контроль данных</th><th>Действие</th></tr></thead><tbody>
-      {#each snapshots as snapshot (snapshot.id)}<tr><td>{datetime(snapshot.created_at)}</td><td>{snapshot.source_name}</td><td>{snapshot.verification}<small class="source-location">{snapshot.consistency} · {snapshot.fidelity}</small></td><td><button class="outline" onclick={()=>void openSnapshot(snapshot)} disabled={busy}>Открыть снимок</button></td></tr>{/each}
-      </tbody></table></div>
-    {/if}
-  </section>
-  {#if activeSnapshot}
-    <section class="detail-card">
-      <div class="backup-heading"><div><h2>Файлы · {activeSnapshot.source_name}</h2><p class="secondary">Снимок от {datetime(activeSnapshot.created_at)}. Выделите файлы или каталоги для выгрузки или восстановления.</p></div><button class="text-button" onclick={()=>{activeSnapshot=null;files=[];selection=[];}}>Закрыть</button></div>
-      <label>Поиск по имени и пути <input class="backup-search" bind:value={filter} placeholder="Video, отчет.xlsx" /></label>
-      <div class="backup-actions">{#if canExport}<button onclick={()=>download(selection)} disabled={busy||selection.length===0}>Скачать выбранное ZIP ({selection.length})</button><button class="outline" onclick={()=>download([])} disabled={busy}>Скачать весь снимок ZIP</button><button class="outline" onclick={()=>void restore()} disabled={busy}>Восстановить в новую папку на сервере</button>{/if}</div>
-      <div class="table-scroll backup-file-list"><table><thead><tr><th>Выбор</th><th>Путь</th><th>Тип</th><th>Размер</th><th>Дата изменения</th><th>Файл</th></tr></thead><tbody>
-      {#each visibleFiles.slice(0,2000) as file (file.path)}<tr><td><input type="checkbox" checked={selection.includes(file.path)} onchange={()=>selected(file.path)} disabled={!canExport||file.type==='other'} /></td><td class="path-cell">{file.path}</td><td>{file.type==='dir'?'Каталог':file.type==='file'?'Файл':'Спец. объект'}</td><td>{file.type==='file'?new Intl.NumberFormat('ru-RU').format(file.size):'—'}</td><td>{datetime(file.modified)}</td><td>{#if canExport&&file.type==='file'}<button class="text-button" onclick={()=>download([file.path],true)}>Скачать</button>{/if}</td></tr>{/each}
-      </tbody></table></div>
-      {#if visibleFiles.length>2000}<p class="secondary">Показаны первые 2000 записей. Уточните поиск.</p>{/if}
-    </section>
+<section class="work-area">
+ <header class="workspace-header">
+  <div><span class="eyebrow">{section==='overview'?'ПАНЕЛЬ УПРАВЛЕНИЯ':'BACKUPHUB / УПРАВЛЕНИЕ'}</span>
+   <h1>{({overview:'Обзор',jobs:'Задания',sources:'Источники',storages:'Хранилища',schedules:'Расписания',history:'История копий',runs:'Журнал выполнения'} as Record<Section,string>)[section]}</h1>
+   <p class="secondary">{({overview:'Состояние резервного копирования на одной странице.',jobs:'Что, куда и когда копировать.',sources:'Серверы, базы данных и каталоги для резервирования.',storages:'Места хранения резервных копий.',schedules:'Создавайте расписания один раз и используйте в заданиях.',history:'Снимки, файлы и восстановление.',runs:'Все запуски и результаты резервного копирования.'} as Record<Section,string>)[section]}</p>
+  </div>
+  <div class="heading-actions"><button class="outline" onclick={()=>void refresh()} disabled={busy}>Обновить</button>
+  {#if canConfigure&&['sources','schedules','jobs'].includes(section)}<button class="primary" onclick={()=>editing=!editing}>{editing?'Закрыть':'＋ '+(section==='sources'?'Источник':section==='jobs'?'Задание':'Расписание')}</button>{/if}</div>
+ </header>
+ {#if error}<div class="error" role="alert">{error}</div>{/if}
+ {#if notice}<div class="notice" role="status">{notice}</div>{/if}
+ {#if !loaded}
+  <section class="detail-card">Загрузка данных…</section>
+ {:else if section==='overview'}
+  <div class="metrics">
+   <div class="metric"><span>Активные задания</span><strong>{activeJobs.length}</strong><small>Всего заданий: {jobs.length}</small></div>
+   <div class="metric"><span>Источники</span><strong>{sources.length}</strong><small>Зарегистрировано в системе</small></div>
+   <div class="metric"><span>Снимки</span><strong>{snapshots.length}</strong><small>Доступны в истории</small></div>
+   <div class="metric"><span>Ошибки в журнале</span><strong class:danger-text={failedRuns.length>0}>{failedRuns.length}</strong><small>Среди последних {runs.length} запусков</small></div>
+  </div>
+  <div class="two-column">
+   <section class="detail-card">
+    <div class="section-head"><h2>Задания</h2><button class="text-button" onclick={()=>onNavigate('jobs')}>Все задания →</button></div>
+    {#if jobs.length===0}<div class="empty-state"><strong>Пока нет заданий</strong><p>Подключите источник, выберите хранилище и расписание.</p><button class="outline" onclick={()=>onNavigate('jobs')}>Перейти к заданиям</button></div>
+    {:else}<div class="compact-list">{#each jobs.slice(0,6) as j(j.id)}<div class="compact-row"><div><strong>{j.name}</strong><small>{j.source_name} · {storages.find(s=>s.id===j.repository_id)?.name??j.repository_id}</small></div><span class:muted={!j.enabled} class="status">{j.enabled?'Активно':'Пауза'}</span></div>{/each}</div>{/if}
+   </section>
+   <section class="detail-card">
+    <div class="section-head"><h2>Последние запуски</h2><button class="text-button" onclick={()=>onNavigate('runs')}>Весь журнал →</button></div>
+    {#if runs.length===0}<div class="empty-state"><strong>Запусков ещё не было</strong><p>Здесь появится история выполнения заданий.</p></div>
+    {:else}<div class="compact-list">{#each runs.slice(0,6) as r(r.id)}<div class="compact-row"><div><strong>{jobs.find(j=>j.id===r.task_id)?.name??r.task_id.slice(0,8)}</strong><small>{fmt(r.started_at)}</small></div><span class:error-state={['failed','interrupted'].includes(r.state)} class:good-state={r.state==='completed'} class="status">{stateLabel(r.state)}</span></div>{/each}</div>{/if}
+   </section>
+  </div>
+ {:else if section==='sources'}
+  {#if editing&&canConfigure}
+   <section class="detail-card editor-card"><div class="section-head"><h2>Новый источник</h2><span class="step-hint">1. Подключение</span></div>
+    <form class="form-grid" onsubmit={(e)=>{e.preventDefault();void createSource();}}>
+     <label>Название<input bind:value={sourceForm.name} maxlength="120" required placeholder="Файловый сервер бухгалтерии"/></label>
+     <label>Тип источника<select bind:value={sourceForm.kind}><option value="smb">Сетевая папка SMB2/3</option><option value="sftp">Сервер Linux · SSH/SFTP</option><option value="local">Локальный каталог</option><option value="postgres">PostgreSQL</option></select></label>
+     {#if sourceForm.kind!=='local'}<label>Адрес сервера<input bind:value={sourceForm.host} required placeholder={sourceForm.kind==='smb'?'fileserver.local':sourceForm.kind==='sftp'?'server.local:22':'db.local:5432'}/></label>
+      <label>Пользователь<input bind:value={sourceForm.username} autocomplete="off" required/></label>
+      <label>Пароль<input type="password" bind:value={sourceForm.password} autocomplete="new-password" required/></label>{/if}
+     {#if sourceForm.kind==='smb'}<label>Общая папка<input bind:value={sourceForm.share} required placeholder="Shared"/></label><label>Подкаталог<input bind:value={sourceForm.path} placeholder="Accounting"/></label>
+     {:else if sourceForm.kind==='postgres'}<label>База данных<input bind:value={sourceForm.database} required/></label>
+     {:else}<label>Путь к каталогу<input bind:value={sourceForm.path} required placeholder="/srv/data"/></label>{/if}
+     {#if sourceForm.kind==='sftp'}<p class="helper full">Для SSH необходим доверенный ключ хоста в /etc/backuphub/known_hosts.</p>{/if}
+     <div class="form-actions"><button class="primary" type="submit" disabled={busy}>Сохранить источник</button><button class="outline" type="button" onclick={()=>editing=false}>Отмена</button></div>
+    </form>
+   </section>
   {/if}
   <section class="detail-card">
-    <h2>Журнал выполнения</h2>
-    {#if runs.length===0}<p class="secondary">Запусков пока нет.</p>{:else}<div class="table-scroll"><table><thead><tr><th>Начало</th><th>Задание</th><th>Состояние</th><th>Код результата</th></tr></thead><tbody>
-      {#each runs as run (run.id)}<tr><td>{datetime(run.started_at)}</td><td><code>{run.task_id.slice(0,8)}</code></td><td>{run.state}</td><td>{run.failure_code??'—'}</td></tr>{/each}
-    </tbody></table></div>{/if}
+   <div class="section-head"><h2>Подключённые источники <span class="count">{sources.length}</span></h2></div>
+   {#if sources.length===0}<div class="empty-state"><strong>Источников пока нет</strong><p>Добавьте каталог, файловый сервер или базу данных.</p></div>
+   {:else}<div class="table-scroll"><table><thead><tr><th>Название</th><th>Тип</th><th>Расположение</th><th>Заданий</th></tr></thead><tbody>{#each sources as s(s.id)}<tr><td><strong>{s.name}</strong></td><td><span class="type-label">{sourceType(s.kind)}</span></td><td class="wrap-cell">{sourcePath(s)}</td><td>{jobs.filter(j=>j.source_id===s.id).length}</td></tr>{/each}</tbody></table></div>{/if}
   </section>
+ {:else if section==='schedules'}
+  {#if editing&&canConfigure}
+   <section class="detail-card editor-card"><div class="section-head"><h2>Новое расписание</h2><span class="step-hint">2. Периодичность</span></div>
+   <form class="form-grid" onsubmit={(e)=>{e.preventDefault();void createSchedule();}}>
+    <label>Название<input bind:value={scheduleForm.name} required maxlength="120" placeholder="Ежедневно ночью"/></label>
+    <label>Повторение<select bind:value={scheduleForm.mode}><option value="daily">Каждый день</option><option value="weekly">В выбранные дни недели</option><option value="interval">Через заданный интервал</option></select></label>
+    {#if scheduleForm.mode==='interval'}
+     <label>Каждые<input type="number" min={scheduleForm.unit==='minutes'?5:1} max="525600" bind:value={scheduleForm.interval} required/></label>
+     <label>Единицы<select bind:value={scheduleForm.unit}><option value="minutes">Минуты</option><option value="hours">Часы</option><option value="days">Дни</option></select></label>
+    {:else}
+     <label>Время запуска<input type="time" bind:value={scheduleForm.time} required/></label>
+     <label>Часовой пояс<input bind:value={scheduleForm.timezone} required placeholder="Europe/Moscow"/></label>
+     {#if scheduleForm.mode==='weekly'}
+      <div class="full"><span class="field-label">Дни недели</span><div class="weekday-picker">{#each weekdays as d(d.id)}<label><input type="checkbox" checked={scheduleForm.weekdays.includes(d.id)} onchange={(e)=>weekdayToggle(d.id,e.currentTarget.checked)}/>{d.label}</label>{/each}</div></div>
+     {/if}
+    {/if}
+    <div class="form-actions"><button class="primary" type="submit" disabled={busy||(scheduleForm.mode==='weekly'&&scheduleForm.weekdays.length===0)}>Создать расписание</button><button type="button" class="outline" onclick={()=>editing=false}>Отмена</button></div>
+   </form>
+   </section>
+  {/if}
+  <section class="detail-card">
+   <div class="section-head"><h2>Расписания <span class="count">{schedules.length}</span></h2></div>
+   {#if schedules.length===0}<div class="empty-state"><strong>Нет расписаний</strong><p>Создайте периодичность и привязывайте её к любым заданиям.</p></div>
+   {:else}<div class="table-scroll"><table><thead><tr><th>Название</th><th>Правило</th><th>Часовой пояс</th><th>Заданий</th><th></th></tr></thead><tbody>
+    {#each schedules as p(p.id)}<tr><td><strong>{p.name}</strong></td><td>{scheduleText(p)}</td><td>{p.mode==='interval'?'—':p.timezone}</td><td>{jobs.filter(j=>j.schedule_id===p.id).length}</td><td class="action-cell">{#if canConfigure&&jobs.every(j=>j.schedule_id!==p.id)}<button class="text-button" onclick={()=>void deleteSchedule(p.id)}>Удалить</button>{/if}</td></tr>{/each}
+   </tbody></table></div>{/if}
+  </section>
+ {:else if section==='jobs'}
+  {#if editing&&canConfigure}
+   <section class="detail-card editor-card"><div class="section-head"><h2>Новое задание</h2><span class="step-hint">3. Связать компоненты</span></div>
+    {#if sources.length===0||availableStorages.length===0||schedules.length===0}
+     <div class="empty-state"><strong>Не все компоненты готовы</strong><p>Для задания нужны источник, доступное хранилище и расписание.</p>
+     <div class="quick-links"><button class="outline" onclick={()=>onNavigate('sources')}>Источники</button><button class="outline" onclick={()=>onNavigate('storages')}>Хранилища</button><button class="outline" onclick={()=>onNavigate('schedules')}>Расписания</button></div></div>
+    {:else}
+     <form class="form-grid" onsubmit={(e)=>{e.preventDefault();void createJob();}}>
+      <label class="full">Название задания<input bind:value={jobForm.name} required maxlength="120" placeholder="Ежедневный бэкап бухгалтерии"/></label>
+      <label>Откуда копировать<select bind:value={jobForm.source_id} required><option value="" disabled>Выберите источник</option>{#each sources as s(s.id)}<option value={s.id}>{s.name} · {sourceType(s.kind)}</option>{/each}</select></label>
+      <label>Куда сохранять<select bind:value={jobForm.repository_id} required><option value="" disabled>Выберите хранилище</option>{#each availableStorages as s(s.id)}<option value={s.id}>{s.name}</option>{/each}</select></label>
+      <label class="full">Когда выполнять<select bind:value={jobForm.schedule_id} required><option value="" disabled>Выберите расписание</option>{#each schedules as p(p.id)}<option value={p.id}>{p.name} — {scheduleText(p)}</option>{/each}</select></label>
+      <div class="form-actions"><button type="submit" class="primary" disabled={busy}>Создать задание</button><button type="button" class="outline" onclick={()=>editing=false}>Отмена</button></div>
+     </form>
+    {/if}
+   </section>
+  {/if}
+  <section class="detail-card">
+   <div class="section-head"><h2>Все задания <span class="count">{jobs.length}</span></h2></div>
+   {#if jobs.length===0}<div class="empty-state"><strong>Нет заданий резервного копирования</strong><p>Создайте задание, указав источник, хранилище и расписание.</p></div>
+   {:else}<div class="table-scroll"><table><thead><tr><th>Задание</th><th>Назначение</th><th>Расписание</th><th>Следующий запуск</th><th>Состояние</th><th></th></tr></thead><tbody>
+    {#each jobs as j(j.id)}<tr><td><strong>{j.name}</strong><small class="subline">{j.source_name}</small></td><td>{storages.find(s=>s.id===j.repository_id)?.name??j.repository_id}</td><td>{j.schedule_name||'Интервальное (старое)'}</td><td>{j.enabled?fmt(j.next_run):'—'}</td><td><span class:muted={!j.enabled} class="status">{j.enabled?'Активно':'Пауза'}</span></td><td class="action-cell">{#if canRun}<button class="text-button" onclick={()=>void jobAction(j.id,'run')} disabled={busy||!j.enabled}>Запустить</button>{/if}{#if canConfigure}<button class="text-button" onclick={()=>void jobAction(j.id,j.enabled?'pause':'resume')} disabled={busy}>{j.enabled?'Пауза':'Включить'}</button>{/if}</td></tr>{/each}
+   </tbody></table></div>{/if}
+  </section>
+ {:else if section==='storages'}
+  {#if canConfigure}<StoragePane onCreated={refresh}/>{:else}
+   <section class="detail-card"><h2>Хранилища</h2><div class="table-scroll"><table><thead><tr><th>Название</th><th>Путь</th><th>Место</th><th>Состояние</th></tr></thead><tbody>{#each storages as s(s.id)}<tr><td>{s.name}</td><td>{s.path}</td><td>{size(s.free_bytes)}</td><td>{s.status==='available'?'Доступно':'Недоступно'}</td></tr>{/each}</tbody></table></div></section>
+  {/if}
+ {:else if section==='runs'}
+  <section class="detail-card"><div class="section-head"><h2>Последние запуски <span class="count">{runs.length}</span></h2></div>
+   {#if runs.length===0}<div class="empty-state"><strong>Журнал пуст</strong><p>Результаты запусков появятся здесь.</p></div>
+   {:else}<div class="table-scroll"><table><thead><tr><th>Начало</th><th>Задание</th><th>Результат</th><th>Завершение</th><th>Код ошибки</th></tr></thead><tbody>{#each runs as r(r.id)}<tr><td>{fmt(r.started_at)}</td><td>{jobs.find(j=>j.id===r.task_id)?.name??r.task_id.slice(0,8)}</td><td><span class:error-state={['failed','interrupted'].includes(r.state)} class:good-state={r.state==='completed'} class="status">{stateLabel(r.state)}</span></td><td>{fmt(r.finished_at??'')}</td><td>{r.failure_code||'—'}</td></tr>{/each}</tbody></table></div>{/if}
+  </section>
+ {:else if section==='history'}
+  <section class="detail-card"><div class="section-head"><h2>Снимки <span class="count">{snapshots.length}</span></h2></div>
+   {#if snapshots.length===0}<div class="empty-state"><strong>Нет резервных копий</strong><p>После успешного выполнения задания здесь появится первый снимок.</p></div>
+   {:else}<div class="table-scroll"><table><thead><tr><th>Дата</th><th>Источник</th><th>Проверка</th><th></th></tr></thead><tbody>{#each snapshots as s(s.id)}<tr><td>{fmt(s.created_at)}</td><td><strong>{s.source_name}</strong></td><td><span class:good-state={s.verification==='data_sha256_verified'} class:error-state={s.verification!=='data_sha256_verified'} class="status">{s.verification==='data_sha256_verified'?'Проверено':'Требует проверки'}</span></td><td><button class="outline" disabled={busy} onclick={()=>void openSnapshot(s)}>Открыть снимок</button></td></tr>{/each}</tbody></table></div>{/if}
+  </section>
+  {#if activeSnapshot}<section class="detail-card">
+   <div class="section-head"><div><h2>Файлы — {activeSnapshot.source_name}</h2><p class="secondary">Снимок от {fmt(activeSnapshot.created_at)}</p></div><button class="text-button" onclick={()=>{activeSnapshot=null;files=[];selection=[];}}>Закрыть</button></div>
+   <label class="search-field">Поиск по пути<input bind:value={filter} placeholder="Название файла или папки"/></label>
+   {#if canExport}<div class="form-actions"><button class="primary" onclick={()=>download(selection)} disabled={busy||selection.length===0}>Скачать выбранное ({selection.length})</button><button class="outline" onclick={()=>download([])}>Скачать весь снимок</button><button class="outline" onclick={()=>void restore()} disabled={busy||selection.length===0}>Восстановить выбранное</button></div>{/if}
+   <div class="table-scroll file-scroll"><table><thead><tr><th></th><th>Путь</th><th>Тип</th><th>Размер</th><th>Изменён</th><th></th></tr></thead><tbody>{#each visibleFiles.slice(0,2000) as f(f.path)}<tr><td><input type="checkbox" checked={selection.includes(f.path)} onchange={()=>toggleFile(f.path)} disabled={!canExport||f.type==='other'}/></td><td class="wrap-cell">{f.path}</td><td>{f.type==='dir'?'Папка':f.type==='file'?'Файл':'Другое'}</td><td>{f.type==='file'?new Intl.NumberFormat('ru-RU').format(f.size):'—'}</td><td>{fmt(f.modified)}</td><td>{#if canExport&&f.type==='file'}<button class="text-button" onclick={()=>download([f.path],true)}>Скачать</button>{/if}</td></tr>{/each}</tbody></table></div>
+   {#if visibleFiles.length>2000}<p class="secondary">Показаны первые 2000 записей. Уточните поиск.</p>{/if}
+  </section>{/if}
+ {/if}
 </section>
 
 <style>
- .backup-workspace{display:grid;gap:18px}.backup-heading{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:14px}.backup-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;padding:16px 0}.backup-form label{display:grid;gap:6px} .backup-form input,.backup-form select,.table-scroll td select,.backup-search{width:100%;max-width:100%;min-width:0;padding:10px;border:1px solid #405474;border-radius:7px;background:#172338;color:#eee}.backup-form p{grid-column:1/-1}.backup-form button{align-self:end}.backup-actions{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}.source-location{display:block;opacity:.7;font-size:12px;margin-top:4px}.path-cell{max-width:480px;overflow-wrap:anywhere}.action-cell{white-space:nowrap}.backup-file-list{max-height:520px;overflow:auto}.backup-heading h2{margin:0 0 5px}
+ .work-area{display:grid;gap:22px}
+ .workspace-header{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:3px}
+ .workspace-header h1{margin:7px 0 6px}
+ .workspace-header p{margin:0}
+ .heading-actions,.form-actions,.quick-links{display:flex;flex-wrap:wrap;gap:9px;align-items:center}
+ .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}
+ .metric{background:#fff;border:1px solid var(--line);border-radius:15px;padding:22px;display:flex;flex-direction:column;gap:11px;box-shadow:var(--shadow)}
+ .metric span{font-size:13px;color:var(--muted);font-weight:600}
+ .metric strong{font-size:31px;line-height:1.2;letter-spacing:-.04em}
+ .metric small{font-size:12px;color:var(--muted)}
+ .two-column{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+ .section-head{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;margin-bottom:17px}
+ .section-head h2{margin:0}
+ .section-head .secondary{margin:5px 0 0}
+ .count{font-size:12px;font-weight:700;color:var(--muted);border:1px solid var(--line);padding:3px 8px;border-radius:20px;vertical-align:middle;margin-left:5px}
+ .step-hint{color:var(--muted);font-size:12px}
+ .form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+ .form-grid label{display:flex;flex-direction:column;gap:8px;font-weight:600;font-size:13px;color:var(--text)}
+ .form-grid .full,.form-actions,.full{grid-column:1/-1}
+ .form-actions{margin-top:7px}
+ .field-label{display:block;font-weight:600;font-size:13px;margin-bottom:10px}
+ .weekday-picker{display:flex;flex-wrap:wrap;gap:8px}
+ .weekday-picker label{display:flex;flex-direction:row;align-items:center;gap:7px;border:1px solid var(--line);padding:10px;border-radius:9px;cursor:pointer}
+ .weekday-picker input{width:auto}
+ .empty-state{padding:34px 18px;display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;color:var(--text)}
+ .empty-state strong{font-size:16px}
+ .empty-state p{color:var(--muted);margin:0 0 8px}
+ .compact-list{display:grid}
+ .compact-row{padding:14px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:14px;align-items:center}
+ .compact-row:last-child{border-bottom:0}
+ .compact-row div{min-width:0;display:grid;gap:6px}
+ .compact-row strong{font-size:13px;overflow-wrap:anywhere}
+ .compact-row small,.subline{font-size:12px;color:var(--muted);display:block;margin-top:5px}
+ .type-label{font-weight:650;color:#3c5f89}
+ .wrap-cell{max-width:360px;min-width:120px;white-space:normal;overflow-wrap:anywhere;font-size:12px;color:var(--muted)}
+ .action-cell{white-space:nowrap;text-align:right}
+ .action-cell button+button{margin-left:10px}
+ .search-field{display:grid;gap:7px;max-width:420px;margin-bottom:14px}
+ .file-scroll{max-height:550px;overflow:auto}
+ .helper{font-size:12px;color:var(--muted)}
+ .status{display:inline-flex;align-items:center;white-space:nowrap;border-radius:7px;padding:5px 10px;color:#256348;background:#eaf7f0;font-size:11px;font-weight:700}
+ .status.muted{color:#788394;background:#f1f3f7}
+ .status.error-state{color:#a84242;background:#fcecec}
+ .status.good-state{color:#256348;background:#eaf7f0}
+ .danger-text{color:#b44343}
+ @media(max-width:1100px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.two-column{grid-template-columns:1fr}}
+ @media(max-width:700px){.workspace-header{align-items:flex-start;flex-direction:column}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.form-grid{grid-template-columns:1fr}.metric{padding:15px}}
 </style>

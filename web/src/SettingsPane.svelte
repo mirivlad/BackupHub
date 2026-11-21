@@ -67,6 +67,6 @@
  .settings-workspace{display:grid;gap:18px}
  form{display:grid;justify-items:start;gap:13px;max-width:720px}
  form label{font-weight:600}
- form select{max-width:100%;width:100%;background:#172338;color:#eee;border:1px solid #405474;border-radius:7px;padding:12px}
+ form select{max-width:100%;width:100%;background:#fff;color:var(--text);border:1px solid var(--line);border-radius:7px;padding:12px}
  form p{margin:0}
 </style>
