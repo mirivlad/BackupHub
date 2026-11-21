@@ -2,6 +2,7 @@
  import {onMount} from 'svelte';
  import StoragePane from './StoragePane.svelte';
  import CronRuleEditor from './CronRuleEditor.svelte';
+ import SnapshotBrowser from './SnapshotBrowser.svelte';
  type Section='overview'|'jobs'|'sources'|'storages'|'history'|'runs';
  type Source={id:string;name:string;kind:string;host:string;share:string;path:string;username:string;database:string;access_status?:string;access_hint?:string;auth_method?:string;host_key_fingerprint?:string;};
  type Storage={id:string;name:string;path:string;free_bytes:number;status:string;password_mode:string};
@@ -9,17 +10,13 @@
  type Job={id:string;name:string;source_id:string;source_name:string;repository_id:string;schedule:Profile;enabled:boolean;next_run:string;running:boolean;manual_queued:boolean;current_state?:string};
  type Snapshot={id:string;source_id:string;source_name:string;kind:string;created_at:string;verification:string;fidelity:string;consistency:string};
  type Run={id:string;task_id:string;state:string;started_at:string;finished_at?:string;failure_code?:string};
- type File={path:string;name:string;type:string;size:number;modified:string};
  let {section,role,onNavigate}:{section:Section;role:string;onNavigate:(section:Section)=>void}=$props();
  let sources=$state<Source[]>([]);
  let storages=$state<Storage[]>([]);
  let jobs=$state<Job[]>([]);
  let snapshots=$state<Snapshot[]>([]);
  let runs=$state<Run[]>([]);
- let files=$state<File[]>([]);
  let activeSnapshot=$state<Snapshot|null>(null);
- let selection=$state<string[]>([]);
- let filter=$state('');
  let busy=$state(false);
  let loaded=$state(false);
  let error=$state('');
@@ -38,7 +35,6 @@
  const canConfigure=$derived(role==='administrator');
  const canRun=$derived(role==='administrator'||role==='backup_operator');
  const canExport=$derived(role==='administrator'||role==='restore_operator');
- const visibleFiles=$derived(files.filter(f=>!filter||f.path.toLocaleLowerCase('ru-RU').includes(filter.toLocaleLowerCase('ru-RU'))));
  const availableStorages=$derived(storages.filter(s=>s.status==='available'));
  const activeJobs=$derived(jobs.filter(j=>j.enabled));
  const failedRuns=$derived(runs.filter(r=>r.state==='failed'||r.state==='interrupted'));
@@ -176,12 +172,6 @@
   });
  }
  async function jobAction(id:string,op:'run'|'pause'|'resume'){await runAction(async()=>{await api('/jobs/'+encodeURIComponent(id)+'/'+op,actionBody());notice=op==='run'?'Задание поставлено в очередь':op==='pause'?'Задание приостановлено':'Задание включено';});}
- async function openSnapshot(s:Snapshot){busy=true;error='';try{const v=await api<{files:File[]}>('/snapshots/'+encodeURIComponent(s.id)+'/files');files=v.files;activeSnapshot=s;selection=[];filter='';}
- catch(e){error=e instanceof Error?e.message:'Не удалось открыть снимок';}finally{busy=false;}}
- function toggleFile(path:string){selection=selection.includes(path)?selection.filter(x=>x!==path):[...selection,path];}
- function download(paths:string[],single=false){if(!activeSnapshot)return;const q=new URLSearchParams();for(const p of paths)q.append('path',p);if(single)q.set('mode','single');window.location.assign('/api/v1/backup/snapshots/'+encodeURIComponent(activeSnapshot.id)+'/download?'+q.toString());}
- async function restore(){if(!activeSnapshot||!window.confirm('Восстановить выбранное в новый каталог сервера? Существующие файлы не будут затронуты.'))return;
-  await runAction(async()=>{const r=await api<{directory:string}>('/snapshots/'+encodeURIComponent(activeSnapshot!.id)+'/restore',jsonBody({paths:selection}));notice='Восстановлено в '+r.directory;});}
  function weekdayToggle(day:number,checked:boolean){scheduleForm.weekdays=checked?[...scheduleForm.weekdays,day]:scheduleForm.weekdays.filter(n=>n!==day);}
  onMount(()=>{
   scheduleForm.timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC';
@@ -386,15 +376,15 @@
  {:else if section==='history'}
   <section class="detail-card"><div class="section-head"><h2>Снимки <span class="count">{snapshots.length}</span></h2></div>
    {#if snapshots.length===0}<div class="empty-state"><strong>Нет резервных копий</strong><p>После успешного выполнения задания здесь появится первый снимок.</p></div>
-   {:else}<div class="table-scroll"><table><thead><tr><th>Дата</th><th>Источник</th><th>Проверка</th><th></th></tr></thead><tbody>{#each snapshots as s(s.id)}<tr><td>{fmt(s.created_at)}</td><td><strong>{s.source_name}</strong></td><td><span class:good-state={s.verification==='data_sha256_verified'} class:error-state={s.verification!=='data_sha256_verified'} class="status">{s.verification==='data_sha256_verified'?'Проверено':'Требует проверки'}</span></td><td><button class="outline" disabled={busy} onclick={()=>void openSnapshot(s)}>Открыть снимок</button></td></tr>{/each}</tbody></table></div>{/if}
+   {:else}<div class="table-scroll"><table><thead><tr><th>Дата</th><th>Источник</th><th>Проверка</th><th></th></tr></thead><tbody>{#each snapshots as s(s.id)}<tr><td>{fmt(s.created_at)}</td><td><strong>{s.source_name}</strong></td><td><span class:good-state={s.verification==='data_sha256_verified'} class:error-state={s.verification!=='data_sha256_verified'} class="status">{s.verification==='data_sha256_verified'?'Проверено':'Требует проверки'}</span></td><td><button class="outline" disabled={busy} onclick={()=>activeSnapshot=s}>Открыть снимок</button></td></tr>{/each}</tbody></table></div>{/if}
   </section>
-  {#if activeSnapshot}<section class="detail-card">
-   <div class="section-head"><div><h2>Файлы — {activeSnapshot.source_name}</h2><p class="secondary">Снимок от {fmt(activeSnapshot.created_at)}</p></div><button class="text-button" onclick={()=>{activeSnapshot=null;files=[];selection=[];}}>Закрыть</button></div>
-   <label class="search-field">Поиск по пути<input bind:value={filter} placeholder="Название файла или папки"/></label>
-   {#if canExport}<div class="form-actions"><button class="primary" onclick={()=>download(selection)} disabled={busy||selection.length===0}>Скачать выбранное ({selection.length})</button><button class="outline" onclick={()=>download([])}>Скачать весь снимок</button><button class="outline" onclick={()=>void restore()} disabled={busy||selection.length===0}>Восстановить выбранное</button></div>{/if}
-   <div class="table-scroll file-scroll"><table><thead><tr><th></th><th>Путь</th><th>Тип</th><th>Размер</th><th>Изменён</th><th></th></tr></thead><tbody>{#each visibleFiles.slice(0,2000) as f(f.path)}<tr><td><input type="checkbox" checked={selection.includes(f.path)} onchange={()=>toggleFile(f.path)} disabled={!canExport||f.type==='other'}/></td><td class="wrap-cell">{f.path}</td><td>{f.type==='dir'?'Папка':f.type==='file'?'Файл':'Другое'}</td><td>{f.type==='file'?new Intl.NumberFormat('ru-RU').format(f.size):'—'}</td><td>{fmt(f.modified)}</td><td>{#if canExport&&f.type==='file'}<button class="text-button" onclick={()=>download([f.path],true)}>Скачать</button>{/if}</td></tr>{/each}</tbody></table></div>
-   {#if visibleFiles.length>2000}<p class="secondary">Показаны первые 2000 записей. Уточните поиск.</p>{/if}
-  </section>{/if}
+  {#if activeSnapshot}
+   <section class="detail-card">
+    {#key activeSnapshot.id}
+     <SnapshotBrowser snapshot={activeSnapshot} {canExport} onClose={()=>activeSnapshot=null}/>
+    {/key}
+   </section>
+  {/if}
  {/if}
 </section>
 
@@ -412,7 +402,6 @@
  .two-column{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
  .section-head{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;margin-bottom:17px}
  .section-head h2{margin:0}
- .section-head .secondary{margin:5px 0 0}
  .count{font-size:12px;font-weight:700;color:var(--muted);border:1px solid var(--line);padding:3px 8px;border-radius:20px;vertical-align:middle;margin-left:5px}
  .form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
  .form-grid label{display:flex;flex-direction:column;gap:8px;font-weight:600;font-size:13px;color:var(--text)}
@@ -441,8 +430,6 @@
  .wrap-cell{max-width:360px;min-width:120px;white-space:normal;overflow-wrap:anywhere;font-size:12px;color:var(--muted)}
  .action-cell{white-space:nowrap;text-align:right}
  .action-cell button+button{margin-left:10px}
- .search-field{display:grid;gap:7px;max-width:420px;margin-bottom:14px}
- .file-scroll{max-height:550px;overflow:auto}
  .helper{font-size:12px;color:var(--muted)}
  .status{display:inline-flex;align-items:center;white-space:nowrap;border-radius:7px;padding:5px 10px;color:#256348;background:#eaf7f0;font-size:11px;font-weight:700}
  .status.muted{color:#788394;background:#f1f3f7}

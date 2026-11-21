@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/mirivlad/BackupHub/internal/backup"
@@ -301,12 +302,38 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			if !method(w, r, http.MethodGet) {
 				return
 			}
-			files, err := s.backup.Files(r.Context(), id)
+			// Request one shallow directory or a bounded recursive search result.
+			query := r.URL.Query()
+			offset := 0
+			limit := 120
+			if value := query.Get("offset"); value != "" {
+				parsed, parseErr := strconv.Atoi(value)
+				if parseErr != nil {
+					jsonResponse(w, 400, map[string]string{"error": "Некорректный номер страницы"})
+					return
+				}
+				offset = parsed
+			}
+			if value := query.Get("limit"); value != "" {
+				parsed, parseErr := strconv.Atoi(value)
+				if parseErr != nil {
+					jsonResponse(w, 400, map[string]string{"error": "Некорректный размер страницы"})
+					return
+				}
+				limit = parsed
+			}
+			var page backup.BrowsePage
+			var err error
+			if query.Get("folders") == "1" {
+				page, err = s.backup.BrowseFolders(r.Context(), id, query.Get("dir"), offset, limit)
+			} else {
+				page, err = s.backup.BrowseSnapshot(r.Context(), id, query.Get("dir"), query.Get("q"), offset, limit)
+			}
 			if err != nil {
 				fail(err)
 				return
 			}
-			jsonResponse(w, 200, map[string]any{"files": files})
+			jsonResponse(w, 200, page)
 			return
 		case "download":
 			if !canRestore {
@@ -363,6 +390,12 @@ func publicError(err error) string {
 	// they may contain usernames, source paths or protocol details.
 	if errors.Is(err, sql.ErrNoRows) {
 		return "resource not found"
+	}
+	if errors.Is(err, backup.ErrBrowseInvalidRequest) {
+		return "Некорректный путь, поиск или номер страницы"
+	}
+	if errors.Is(err, backup.ErrBrowseDirectoryNotFound) {
+		return "Папка не найдена в выбранном снимке"
 	}
 	if errors.Is(err, backup.ErrPasswordlessResticUnsupported) {
 		return "Для хранения без пароля нужен Restic версии 0.17.0 или новее"

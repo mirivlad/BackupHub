@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"os/exec"
@@ -24,21 +25,23 @@ import (
 // Restic uses its native filesystem snapshot format for complete directory trees.
 // A separate durable commit marker is written AFTER verifying all Restic data.
 const (
- PasswordMode = "password"
- NoPasswordMode = "no_password"
+	PasswordMode   = "password"
+	NoPasswordMode = "no_password"
 )
 
-func validPasswordMode(mode string) bool {return mode==PasswordMode || mode==NoPasswordMode}
+func validPasswordMode(mode string) bool { return mode == PasswordMode || mode == NoPasswordMode }
 
 // Restic 0.17.0 introduced this global option. Reject unsupported versions
 // before preparing a passwordless repository, never create a mixed-mode repo.
-var ErrPasswordlessResticUnsupported=errors.New("passwordless storage requires restic 0.17.0 or newer")
+var ErrPasswordlessResticUnsupported = errors.New("passwordless storage requires restic 0.17.0 or newer")
 
-func checkPasswordlessRestic(ctx context.Context,binary string)error{
- cmd:=exec.CommandContext(ctx,binary,"--insecure-no-password","version")
- cmd.Env=[]string{"PATH="+os.Getenv("PATH"),"HOME="+os.Getenv("HOME"),"LANG=C"}
- if err:=cmd.Run();err!=nil{return fmt.Errorf("%w: %v",ErrPasswordlessResticUnsupported,err)}
- return nil
+func checkPasswordlessRestic(ctx context.Context, binary string) error {
+	cmd := exec.CommandContext(ctx, binary, "--insecure-no-password", "version")
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "LANG=C"}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%w: %v", ErrPasswordlessResticUnsupported, err)
+	}
+	return nil
 }
 
 type repository struct{ binary, path, passwordFile, passwordMode string }
@@ -62,151 +65,265 @@ func (b *boundedOutput) String() string { return b.buf.String() }
 // repository empty, so an interrupted first start can finish using the same
 // persistent password. Existing repositories never get silently recreated.
 // Reject symlinked ancestors before writing or reading a storage path.
-func validateRealParents(p string)error{
- if !filepath.IsAbs(p){return errors.New("repository path must be absolute")}
- for current:=filepath.Dir(filepath.Clean(p));current!="/";current=filepath.Dir(current){
-  info,err:=os.Lstat(current)
-  if err!=nil{return err}
-  if !info.IsDir()||info.Mode()&os.ModeSymlink!=0{return errors.New("repository parent is not a real directory")}
- }
- return nil
+func validateRealParents(p string) error {
+	if !filepath.IsAbs(p) {
+		return errors.New("repository path must be absolute")
+	}
+	for current := filepath.Dir(filepath.Clean(p)); current != "/"; current = filepath.Dir(current) {
+		info, err := os.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("repository parent is not a real directory")
+		}
+	}
+	return nil
 }
 
 func initRepository(ctx context.Context, stateDir, repoPath string) (*repository, error) {
- return initRepositoryNamed(ctx,stateDir,repoPath,filepath.Join(stateDir,"restic.key"),"restic.init-in-progress")
+	return initRepositoryNamed(ctx, stateDir, repoPath, filepath.Join(stateDir, "restic.key"), "restic.init-in-progress")
 }
 
 func initRepositoryNamed(ctx context.Context, stateDir, repoPath, keyPath, markerFilename string) (*repository, error) {
- return initRepositoryNamedMode(ctx,stateDir,repoPath,keyPath,markerFilename,PasswordMode)
+	return initRepositoryNamedMode(ctx, stateDir, repoPath, keyPath, markerFilename, PasswordMode)
 }
 
 // Mode is immutable for a repository. A passwordless repository still uses
 // Restic encryption internally, but has no external recovery secret.
-func initRepositoryNamedMode(ctx context.Context, stateDir, repoPath, keyPath, markerFilename, mode string) (*repository,error) {
- if !validPasswordMode(mode){return nil,errors.New("invalid repository password mode")}
- if repoPath == "" { repoPath = filepath.Join(stateDir, "repository") }
- if !filepath.IsAbs(repoPath) || filepath.Clean(repoPath) == "/" {
-  return nil, errors.New("repository requires an absolute non-root path")
- }
- binary, err := exec.LookPath("restic")
- if err != nil {return nil, fmt.Errorf("restic executable not installed: %w", err)}
- if mode==NoPasswordMode {if err=checkPasswordlessRestic(ctx,binary);err!=nil{return nil,err}}
- r:=&repository{binary:binary,path:filepath.Clean(repoPath),passwordFile:keyPath,passwordMode:mode}
- if err=validateRealParents(r.path);err!=nil{return nil,err}
- if err=os.MkdirAll(r.path,0700);err!=nil{return nil,err}
- info,err:=os.Lstat(r.path)
- if err!=nil{return nil,err}
- if !info.IsDir() || info.Mode()&os.ModeSymlink!=0 || info.Mode().Perm()&0077!=0 {
-  return nil, errors.New("repository directory must be real and private")
- }
- marker:=filepath.Join(stateDir,markerFilename)
- markerInfo, markerErr:=os.Lstat(marker)
- if markerErr!=nil && !os.IsNotExist(markerErr){return nil,markerErr}
- if markerErr==nil && (!markerInfo.Mode().IsRegular() || markerInfo.Mode().Perm()&0077!=0){
-  return nil,errors.New("repository init marker is unsafe")
- }
- keyInfo,keyErr:=os.Lstat(r.passwordFile)
- if keyErr!=nil && !os.IsNotExist(keyErr){return nil,keyErr}
- repoInfo,repoErr:=os.Lstat(filepath.Join(r.path,"config"))
- if repoErr!=nil && !os.IsNotExist(repoErr){return nil,repoErr}
- if mode==NoPasswordMode {
-  // Never tolerate a stray key file: this would disguise a mode mismatch.
-  if keyErr==nil{return nil,errors.New("passwordless repository unexpectedly has a key file")}
- } else if keyErr==nil {
-  if !keyInfo.Mode().IsRegular() || keyInfo.Mode().Perm()&0077!=0 {return nil,errors.New("repository key is not private")}
- }
- if repoErr==nil {
-  if (mode==PasswordMode && keyErr!=nil) || !repoInfo.Mode().IsRegular(){
-   return nil,errors.New("repository/key mismatch: refusing to overwrite existing or lost Restic credentials")
-  }
-  if _,err=r.run(ctx,nil,"snapshots","--json");err!=nil {
-   return nil,fmt.Errorf("cannot open repository: %w",err)
-  }
-  if markerErr==nil{if err=os.Remove(marker);err!=nil{return nil,err}}
-  return r,nil
- }
- // Config is missing. Only an empty final repository may be initialized.
- entries,err:=os.ReadDir(r.path)
- if err!=nil{return nil,err}
- if len(entries)!=0{return nil,errors.New("existing repository is incomplete or damaged; recovery required")}
- if mode==PasswordMode && keyErr==nil {
-  // A key without a persisted initialization marker may indicate a deleted
-  // existing repository. Never silently recreate it.
-  if markerErr!=nil {return nil,errors.New("repository config lost: refusing silent recreation")}
- } else if markerErr!=nil {
-  f,err:=os.OpenFile(marker,os.O_CREATE|os.O_EXCL|os.O_WRONLY,0600)
-  if err!=nil{return nil,err}
-  if _,err=f.WriteString("initializing new repository\n");err!=nil{_ =f.Close();return nil,err}
-  if err=f.Sync();err!=nil{_ =f.Close();return nil,err}
-  if err=f.Close();err!=nil{return nil,err}
- }
- if mode==PasswordMode && keyErr!=nil {
-  key:=make([]byte,48)
-  if _,err=rand.Read(key);err!=nil{return nil,err}
-  f,err:=os.OpenFile(r.passwordFile,os.O_CREATE|os.O_EXCL|os.O_WRONLY,0600)
-  if err!=nil{return nil,err}
-  if _,err=f.WriteString(hex.EncodeToString(key)+"\n");err!=nil{_ =f.Close();return nil,err}
-  if err=f.Sync();err!=nil{_ =f.Close();return nil,err}
-  if err=f.Close();err!=nil{return nil,err}
- }
- // Sibling directory ensures atomic publication even on a separate mounted
- // storage volume. Only an empty directory can be replaced by Rename.
- candidate,err:=os.MkdirTemp(filepath.Dir(r.path),filepath.Base(r.path)+".init-")
- if err!=nil{return nil,err}
- published:=false
- defer func(){if !published{_ =os.RemoveAll(candidate)}}()
- temp:=&repository{binary:r.binary,path:candidate,passwordFile:r.passwordFile,passwordMode:mode}
- if _,err=temp.run(ctx,nil,"init");err!=nil{return nil,fmt.Errorf("cannot initialize temporary repository: %w",err)}
- if _,err=temp.run(ctx,nil,"snapshots","--json");err!=nil{return nil,fmt.Errorf("cannot verify temporary repository: %w",err)}
- // A directory with a 'config' and data cannot be renamed over an
- // existing directory on all supported filesystems. Remove only the empty
- // placeholder; os.Remove fails closed if files have appeared in it.
- entries,err=os.ReadDir(r.path)
- if err!=nil{return nil,err}
- if len(entries)!=0{return nil,errors.New("repository target changed during initialization")}
- if err=os.Remove(r.path);err!=nil{return nil,fmt.Errorf("cannot remove empty repository placeholder: %w",err)}
- if err=os.Rename(candidate,r.path);err!=nil{return nil,fmt.Errorf("cannot publish repository: %w",err)}
- published=true
- if err=os.Remove(marker);err!=nil{return nil,err}
- return r,nil
+func initRepositoryNamedMode(ctx context.Context, stateDir, repoPath, keyPath, markerFilename, mode string) (*repository, error) {
+	if !validPasswordMode(mode) {
+		return nil, errors.New("invalid repository password mode")
+	}
+	if repoPath == "" {
+		repoPath = filepath.Join(stateDir, "repository")
+	}
+	if !filepath.IsAbs(repoPath) || filepath.Clean(repoPath) == "/" {
+		return nil, errors.New("repository requires an absolute non-root path")
+	}
+	binary, err := exec.LookPath("restic")
+	if err != nil {
+		return nil, fmt.Errorf("restic executable not installed: %w", err)
+	}
+	if mode == NoPasswordMode {
+		if err = checkPasswordlessRestic(ctx, binary); err != nil {
+			return nil, err
+		}
+	}
+	r := &repository{binary: binary, path: filepath.Clean(repoPath), passwordFile: keyPath, passwordMode: mode}
+	if err = validateRealParents(r.path); err != nil {
+		return nil, err
+	}
+	if err = os.MkdirAll(r.path, 0700); err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(r.path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
+		return nil, errors.New("repository directory must be real and private")
+	}
+	marker := filepath.Join(stateDir, markerFilename)
+	markerInfo, markerErr := os.Lstat(marker)
+	if markerErr != nil && !os.IsNotExist(markerErr) {
+		return nil, markerErr
+	}
+	if markerErr == nil && (!markerInfo.Mode().IsRegular() || markerInfo.Mode().Perm()&0077 != 0) {
+		return nil, errors.New("repository init marker is unsafe")
+	}
+	keyInfo, keyErr := os.Lstat(r.passwordFile)
+	if keyErr != nil && !os.IsNotExist(keyErr) {
+		return nil, keyErr
+	}
+	repoInfo, repoErr := os.Lstat(filepath.Join(r.path, "config"))
+	if repoErr != nil && !os.IsNotExist(repoErr) {
+		return nil, repoErr
+	}
+	if mode == NoPasswordMode {
+		// Never tolerate a stray key file: this would disguise a mode mismatch.
+		if keyErr == nil {
+			return nil, errors.New("passwordless repository unexpectedly has a key file")
+		}
+	} else if keyErr == nil {
+		if !keyInfo.Mode().IsRegular() || keyInfo.Mode().Perm()&0077 != 0 {
+			return nil, errors.New("repository key is not private")
+		}
+	}
+	if repoErr == nil {
+		if (mode == PasswordMode && keyErr != nil) || !repoInfo.Mode().IsRegular() {
+			return nil, errors.New("repository/key mismatch: refusing to overwrite existing or lost Restic credentials")
+		}
+		if _, err = r.run(ctx, nil, "snapshots", "--json"); err != nil {
+			return nil, fmt.Errorf("cannot open repository: %w", err)
+		}
+		if markerErr == nil {
+			if err = os.Remove(marker); err != nil {
+				return nil, err
+			}
+		}
+		return r, nil
+	}
+	// Config is missing. Only an empty final repository may be initialized.
+	entries, err := os.ReadDir(r.path)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) != 0 {
+		return nil, errors.New("existing repository is incomplete or damaged; recovery required")
+	}
+	if mode == PasswordMode && keyErr == nil {
+		// A key without a persisted initialization marker may indicate a deleted
+		// existing repository. Never silently recreate it.
+		if markerErr != nil {
+			return nil, errors.New("repository config lost: refusing silent recreation")
+		}
+	} else if markerErr != nil {
+		f, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			return nil, err
+		}
+		if _, err = f.WriteString("initializing new repository\n"); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		if err = f.Sync(); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		if err = f.Close(); err != nil {
+			return nil, err
+		}
+	}
+	if mode == PasswordMode && keyErr != nil {
+		key := make([]byte, 48)
+		if _, err = rand.Read(key); err != nil {
+			return nil, err
+		}
+		f, err := os.OpenFile(r.passwordFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			return nil, err
+		}
+		if _, err = f.WriteString(hex.EncodeToString(key) + "\n"); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		if err = f.Sync(); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		if err = f.Close(); err != nil {
+			return nil, err
+		}
+	}
+	// Sibling directory ensures atomic publication even on a separate mounted
+	// storage volume. Only an empty directory can be replaced by Rename.
+	candidate, err := os.MkdirTemp(filepath.Dir(r.path), filepath.Base(r.path)+".init-")
+	if err != nil {
+		return nil, err
+	}
+	published := false
+	defer func() {
+		if !published {
+			_ = os.RemoveAll(candidate)
+		}
+	}()
+	temp := &repository{binary: r.binary, path: candidate, passwordFile: r.passwordFile, passwordMode: mode}
+	if _, err = temp.run(ctx, nil, "init"); err != nil {
+		return nil, fmt.Errorf("cannot initialize temporary repository: %w", err)
+	}
+	if _, err = temp.run(ctx, nil, "snapshots", "--json"); err != nil {
+		return nil, fmt.Errorf("cannot verify temporary repository: %w", err)
+	}
+	// A directory with a 'config' and data cannot be renamed over an
+	// existing directory on all supported filesystems. Remove only the empty
+	// placeholder; os.Remove fails closed if files have appeared in it.
+	entries, err = os.ReadDir(r.path)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) != 0 {
+		return nil, errors.New("repository target changed during initialization")
+	}
+	if err = os.Remove(r.path); err != nil {
+		return nil, fmt.Errorf("cannot remove empty repository placeholder: %w", err)
+	}
+	if err = os.Rename(candidate, r.path); err != nil {
+		return nil, fmt.Errorf("cannot publish repository: %w", err)
+	}
+	published = true
+	if err = os.Remove(marker); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
-
 
 // openRepositoryNamed never creates directories or credentials: a disconnected
 // mount must never silently become a brand-new repository on the system disk.
-func openRepositoryNamed(ctx context.Context, stateDir, repoPath, keyPath string) (*repository,error) {
- return openRepositoryNamedMode(ctx,stateDir,repoPath,keyPath,PasswordMode)
+func openRepositoryNamed(ctx context.Context, stateDir, repoPath, keyPath string) (*repository, error) {
+	return openRepositoryNamedMode(ctx, stateDir, repoPath, keyPath, PasswordMode)
 }
 
-func openRepositoryNamedMode(ctx context.Context, stateDir, repoPath, keyPath, mode string) (*repository,error) {
- if !validPasswordMode(mode){return nil,errors.New("invalid repository password mode")}
- if !filepath.IsAbs(repoPath) || !filepath.IsAbs(keyPath) {return nil,errors.New("repository path must be absolute")}
- binary,err:=exec.LookPath("restic");if err!=nil{return nil,err}
- r:=&repository{binary:binary,path:filepath.Clean(repoPath),passwordFile:keyPath,passwordMode:mode}
- if err=validateRealParents(r.path);err!=nil{return nil,err}
- for _,p:=range []string{r.path,filepath.Dir(r.path)} {
-  info,err:=os.Lstat(p)
-  if err!=nil{return nil,fmt.Errorf("storage unavailable: %w",err)}
-  if !info.IsDir() || info.Mode()&os.ModeSymlink!=0{return nil,errors.New("unsafe repository path")}
- }
- if mode==PasswordMode {
-  keyInfo,err:=os.Lstat(keyPath)
-  if err!=nil{return nil,fmt.Errorf("repository credentials unavailable: %w",err)}
-  if !keyInfo.Mode().IsRegular() || keyInfo.Mode().Perm()&0077!=0{return nil,errors.New("repository key must be private")}
- } else {
-  if _,err:=os.Lstat(keyPath);err==nil{return nil,errors.New("unexpected password file in passwordless mode")} else if !os.IsNotExist(err){return nil,err}
- }
- config,err:=os.Lstat(filepath.Join(r.path,"config"))
- if err!=nil{return nil,fmt.Errorf("repository unavailable: %w",err)}
- if !config.Mode().IsRegular(){return nil,errors.New("invalid restic repository config")}
- if _,err=r.run(ctx,nil,"snapshots","--json");err!=nil{return nil,fmt.Errorf("cannot unlock storage: %w",err)}
- return r,nil
+func openRepositoryNamedMode(ctx context.Context, stateDir, repoPath, keyPath, mode string) (*repository, error) {
+	if !validPasswordMode(mode) {
+		return nil, errors.New("invalid repository password mode")
+	}
+	if !filepath.IsAbs(repoPath) || !filepath.IsAbs(keyPath) {
+		return nil, errors.New("repository path must be absolute")
+	}
+	binary, err := exec.LookPath("restic")
+	if err != nil {
+		return nil, err
+	}
+	r := &repository{binary: binary, path: filepath.Clean(repoPath), passwordFile: keyPath, passwordMode: mode}
+	if err = validateRealParents(r.path); err != nil {
+		return nil, err
+	}
+	for _, p := range []string{r.path, filepath.Dir(r.path)} {
+		info, err := os.Lstat(p)
+		if err != nil {
+			return nil, fmt.Errorf("storage unavailable: %w", err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, errors.New("unsafe repository path")
+		}
+	}
+	if mode == PasswordMode {
+		keyInfo, err := os.Lstat(keyPath)
+		if err != nil {
+			return nil, fmt.Errorf("repository credentials unavailable: %w", err)
+		}
+		if !keyInfo.Mode().IsRegular() || keyInfo.Mode().Perm()&0077 != 0 {
+			return nil, errors.New("repository key must be private")
+		}
+	} else {
+		if _, err := os.Lstat(keyPath); err == nil {
+			return nil, errors.New("unexpected password file in passwordless mode")
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+	}
+	config, err := os.Lstat(filepath.Join(r.path, "config"))
+	if err != nil {
+		return nil, fmt.Errorf("repository unavailable: %w", err)
+	}
+	if !config.Mode().IsRegular() {
+		return nil, errors.New("invalid restic repository config")
+	}
+	if _, err = r.run(ctx, nil, "snapshots", "--json"); err != nil {
+		return nil, fmt.Errorf("cannot unlock storage: %w", err)
+	}
+	return r, nil
 }
 
 func (r *repository) command(ctx context.Context, stdin io.Reader, args ...string) *exec.Cmd {
-	base:=[]string{"--repo",r.path,"--no-cache"}
- if r.passwordMode==NoPasswordMode {base=append(base,"--insecure-no-password")} else {base=append(base,"--password-file",r.passwordFile)}
- cmd := exec.CommandContext(ctx, r.binary, append(base, args...)...)
+	base := []string{"--repo", r.path, "--no-cache"}
+	if r.passwordMode == NoPasswordMode {
+		base = append(base, "--insecure-no-password")
+	} else {
+		base = append(base, "--password-file", r.passwordFile)
+	}
+	cmd := exec.CommandContext(ctx, r.binary, append(base, args...)...)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "LANG=C"}
 	cmd.Stdin = stdin
 	return cmd
@@ -560,17 +677,12 @@ func (r *repository) downloadSingle(ctx context.Context, id, root, requested str
 	if err != nil || rel == "." {
 		return errors.New("a single file is required")
 	}
-	entries, err := r.listTree(ctx, id)
+	full, err := r.resolveSnapshotFile(ctx, id, root, rel)
 	if err != nil {
 		return err
 	}
-	for _, e := range entries {
-		candidate, err := relativeTo(root, e.Path)
-		if err == nil && candidate == rel && e.Type == "file" {
-			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(rel)))
-			return r.dumpFile(ctx, id, e.Path, w)
-		}
-	}
-	return errors.New("file not present in the selected snapshot")
+	w.Header().Set("Content-Type", "application/octet-stream")
+	// FormatMediaType handles quoted names and non-ASCII filenames (RFC 5987).
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(rel)}))
+	return r.dumpFile(ctx, id, full, w)
 }
