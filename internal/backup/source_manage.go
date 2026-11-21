@@ -10,10 +10,7 @@ import (
 )
 
 func (s *Service) ListSources(ctx context.Context) ([]Source, error) {
-	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT src.id,src.display_name,src.kind,src.settings_json,
-COALESCE(sch.interval_seconds,0),COALESCE(sch.next_run_unix,0),COALESCE(sch.enabled,0),COALESCE(sr.repository_id,'')
-FROM sources src LEFT JOIN schedule_entries sch ON sch.id=(SELECT id FROM schedule_entries WHERE dataset_id=src.id ORDER BY created_at LIMIT 1)
-LEFT JOIN schedule_repositories sr ON sr.schedule_id=sch.id ORDER BY src.display_name`)
+	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT id,display_name,kind,settings_json FROM sources ORDER BY display_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -22,9 +19,7 @@ LEFT JOIN schedule_repositories sr ON sr.schedule_id=sch.id ORDER BY src.display
 	for rows.Next() {
 		var out Source
 		var encoded string
-		var seconds, next int64
-		var enabled int
-		if err = rows.Scan(&out.ID, &out.Name, &out.Kind, &encoded, &seconds, &next, &enabled, &out.RepositoryID); err != nil {
+		if err = rows.Scan(&out.ID, &out.Name, &out.Kind, &encoded); err != nil {
 			return nil, err
 		}
 		var settings Settings
@@ -36,11 +31,6 @@ LEFT JOIN schedule_repositories sr ON sr.schedule_id=sch.id ORDER BY src.display
 		out.Share = settings.Share
 		out.Username = settings.Username
 		out.Database = settings.Database
-		out.IntervalMinutes = int(seconds / 60)
-		if next > 0 {
-			out.NextRun = time.Unix(next, 0).UTC().Format(time.RFC3339)
-		}
-		out.Enabled = enabled != 0
 		result = append(result, out)
 	}
 	return result, rows.Err()

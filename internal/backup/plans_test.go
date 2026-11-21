@@ -17,7 +17,7 @@ func TestIndependentSourceScheduleAndJob(t *testing.T) {
 	if err := os.WriteFile(dir+"/file.txt", []byte("hello"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	src, err := svc.CreateUnscheduled(ctx, CreateSource{Name: "Documents", Kind: "local", Path: dir})
+	src, err := svc.Create(ctx, CreateSource{Name: "Documents", Kind: "local", Path: dir})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,7 +2,7 @@
  import {onMount} from 'svelte';
  import StoragePane from './StoragePane.svelte';
  type Section='overview'|'jobs'|'sources'|'storages'|'schedules'|'history'|'runs';
- type Source={id:string;name:string;kind:string;host:string;share:string;path:string;username:string;database:string;repository_id:string;interval_minutes:number};
+ type Source={id:string;name:string;kind:string;host:string;share:string;path:string;username:string;database:string;};
  type Storage={id:string;name:string;path:string;free_bytes:number;status:string;password_mode:string};
  type Profile={id:string;name:string;mode:'interval'|'daily'|'weekly';interval_minutes:number;days_of_week:string;hour:number;minute:number;timezone:string};
  type Job={id:string;name:string;source_id:string;source_name:string;repository_id:string;schedule_id:string;schedule_name:string;enabled:boolean;next_run:string};
@@ -186,7 +186,7 @@
    <div class="section-head"><h2>Все задания <span class="count">{jobs.length}</span></h2></div>
    {#if jobs.length===0}<div class="empty-state"><strong>Нет заданий резервного копирования</strong><p>Создайте задание, указав источник, хранилище и расписание.</p></div>
    {:else}<div class="table-scroll"><table><thead><tr><th>Задание</th><th>Назначение</th><th>Расписание</th><th>Следующий запуск</th><th>Состояние</th><th></th></tr></thead><tbody>
-    {#each jobs as j(j.id)}<tr><td><strong>{j.name}</strong><small class="subline">{j.source_name}</small></td><td>{storages.find(s=>s.id===j.repository_id)?.name??j.repository_id}</td><td>{j.schedule_name||'Интервальное (старое)'}</td><td>{j.enabled?fmt(j.next_run):'—'}</td><td><span class:muted={!j.enabled} class="status">{j.enabled?'Активно':'Пауза'}</span></td><td class="action-cell">{#if canRun}<button class="text-button" onclick={()=>void jobAction(j.id,'run')} disabled={busy||!j.enabled}>Запустить</button>{/if}{#if canConfigure}<button class="text-button" onclick={()=>void jobAction(j.id,j.enabled?'pause':'resume')} disabled={busy}>{j.enabled?'Пауза':'Включить'}</button>{/if}</td></tr>{/each}
+    {#each jobs as j(j.id)}<tr><td><strong>{j.name}</strong><small class="subline">{j.source_name}</small></td><td>{storages.find(s=>s.id===j.repository_id)?.name??j.repository_id}</td><td>{j.schedule_name||'—'}</td><td>{j.enabled?fmt(j.next_run):'—'}</td><td><span class:muted={!j.enabled} class="status">{j.enabled?'Активно':'Пауза'}</span></td><td class="action-cell">{#if canRun}<button class="text-button" onclick={()=>void jobAction(j.id,'run')} disabled={busy||!j.enabled}>Запустить</button>{/if}{#if canConfigure}<button class="text-button" onclick={()=>void jobAction(j.id,j.enabled?'pause':'resume')} disabled={busy}>{j.enabled?'Пауза':'Включить'}</button>{/if}</td></tr>{/each}
    </tbody></table></div>{/if}
   </section>
  {:else if section==='storages'}

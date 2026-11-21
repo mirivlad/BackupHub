@@ -46,6 +46,18 @@ func serviceFixture(t *testing.T) *Service {
 	}
 	return svc
 }
+func createTestBackupJob(t *testing.T, svc *Service, ctx context.Context, src Source, repositoryID string) BackupJob {
+	t.Helper()
+	profile, err := svc.CreateSchedule(ctx, ScheduleProfile{Name: "Test schedule", Mode: "interval", IntervalMinutes: 5, Timezone: "UTC"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := svc.CreateJob(ctx, CreateBackupJob{Name: "Test backup", SourceID: src.ID, ScheduleID: profile.ID, RepositoryID: repositoryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return job
+}
 func TestFileBackupVersionHistoryAndZipRestore(t *testing.T) {
 	if _, err := exec.LookPath("restic"); err != nil {
 		if os.Getenv("BACKUPHUB_RESTIC_REQUIRED") == "1" {
@@ -63,11 +75,12 @@ func TestFileBackupVersionHistoryAndZipRestore(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	entry, err := svc.Create(ctx, CreateSource{Name: "Home test", Kind: "local", Path: src, IntervalMinutes: 5})
+	entry, err := svc.Create(ctx, CreateSource{Name: "Home test", Kind: "local", Path: src})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Manual(ctx, entry.ID); err != nil {
+	job := createTestBackupJob(t, svc, ctx, entry, "primary")
+	if err := svc.Manual(ctx, job.ID); err != nil {
 		t.Fatal(err)
 	}
 	ran, err := svc.scheduler.RunDue(ctx)
@@ -123,7 +136,7 @@ func TestFileBackupVersionHistoryAndZipRestore(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(src, "Video", "new.txt"), []byte("new"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err = svc.Manual(ctx, entry.ID); err != nil {
+	if err = svc.Manual(ctx, job.ID); err != nil {
 		t.Fatal(err)
 	}
 	ran, err = svc.scheduler.RunDue(ctx)
@@ -175,9 +188,11 @@ func TestRestoreRejectsNonexistent(t *testing.T) {
 	}
 }
 func TestNoInsecureSourceConfig(t *testing.T) {
-	if _, err := exec.LookPath("restic"); err != nil { t.Skip("restic not installed") }
+	if _, err := exec.LookPath("restic"); err != nil {
+		t.Skip("restic not installed")
+	}
 	svc := serviceFixture(t)
-	source, err := svc.Create(context.Background(), CreateSource{Name: "Postgres", Kind: "postgres", Host: "db.example", Username: "readonly", Password: "test-secret", Database: "db", IntervalMinutes: 60})
+	source, err := svc.Create(context.Background(), CreateSource{Name: "Postgres", Kind: "postgres", Host: "db.example", Username: "readonly", Password: "test-secret", Database: "db"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,107 +212,211 @@ func TestNoInsecureSourceConfig(t *testing.T) {
 	}
 }
 
-func TestMultipleRepositoriesAndHistoricalRestore(t *testing.T){
- if _,err:=exec.LookPath("restic");err!=nil{
-  if os.Getenv("BACKUPHUB_RESTIC_REQUIRED")=="1"{t.Fatal(err)}
-  t.Skip("restic unavailable")
- }
- svc:=serviceFixture(t)
- ctx,cancel:=context.WithTimeout(context.Background(),4*time.Minute)
- defer cancel()
- storagePath:=filepath.Join(privateDir(t),"repo")
- alt,err:=svc.RegisterStorage(ctx,"Archive disk 2",storagePath)
- if err!=nil{t.Fatal(err)}
- if alt.ID=="primary"||alt.Path!=storagePath{t.Fatalf("incorrect alternate storage %+v",alt)}
- storages,err:=svc.ListStorages(ctx)
- if err!=nil||len(storages)!=2{t.Fatalf("expected 2 storages, got %v: %v",len(storages),err)}
- dir:=privateDir(t)
- if err=os.WriteFile(filepath.Join(dir,"save.txt"),[]byte("old-storage"),0600);err!=nil{t.Fatal(err)}
- first,err:=svc.Create(ctx,CreateSource{Name:"History test",Kind:"local",Path:dir,RepositoryID:"primary",IntervalMinutes:60})
- if err!=nil{t.Fatal(err)}
- if err=svc.Manual(ctx,first.ID);err!=nil{t.Fatal(err)}
- if ran,err:=svc.scheduler.RunDue(ctx);err!=nil||!ran{t.Fatalf("first run failed %v, %v",ran,err)}
- if err=svc.SelectSourceStorage(ctx,first.ID,alt.ID);err!=nil{t.Fatal(err)}
- if err=os.WriteFile(filepath.Join(dir,"save.txt"),[]byte("new-storage"),0600);err!=nil{t.Fatal(err)}
- if err=svc.Manual(ctx,first.ID);err!=nil{t.Fatal(err)}
- if ran,err:=svc.scheduler.RunDue(ctx);err!=nil||!ran{t.Fatalf("second run failed %v, %v",ran,err)}
- history,err:=svc.ListSnapshots(ctx,first.ID)
- if err!=nil||len(history)!=2{t.Fatalf("history: %v, %v",history,err)}
- if history[0].RepositoryID!=alt.ID||history[1].RepositoryID!="primary"{t.Fatalf("repository references swapped: %+v",history)}
- for _,snapshot:=range history{
-  recorder:=httptest.NewRecorder()
-  if err=svc.Download(ctx,snapshot.ID,[]string{"save.txt"},true,recorder);err!=nil{t.Fatal(err)}
-  expected:="new-storage"
-  if snapshot.RepositoryID=="primary"{expected="old-storage"}
-  if recorder.Body.String()!=expected{t.Fatalf("bad snapshot on %s: %s",snapshot.RepositoryID,recorder.Body.String())}
- }
- // Removal of secondary mount must not create a replacement on the root disk.
- moved:=storagePath+".detached"
- if err=os.Rename(storagePath,moved);err!=nil{t.Fatal(err)}
- if _,err=svc.Files(ctx,history[0].ID);err==nil{t.Fatal("storage outage silently used an empty fallback")}
- if _,err=os.Stat(storagePath);!os.IsNotExist(err){t.Fatalf("detached repo path re-created unexpectedly: %v",err)}
- // Historical original snapshot from primary remains independently restorable.
- if _,err=svc.RestoreToNewDirectory(ctx,history[1].ID,[]string{"save.txt"});err!=nil{t.Fatal(err)}
+func TestMultipleRepositoriesAndHistoricalRestore(t *testing.T) {
+	if _, err := exec.LookPath("restic"); err != nil {
+		if os.Getenv("BACKUPHUB_RESTIC_REQUIRED") == "1" {
+			t.Fatal(err)
+		}
+		t.Skip("restic unavailable")
+	}
+	svc := serviceFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	storagePath := filepath.Join(privateDir(t), "repo")
+	alt, err := svc.RegisterStorage(ctx, "Archive disk 2", storagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alt.ID == "primary" || alt.Path != storagePath {
+		t.Fatalf("incorrect alternate storage %+v", alt)
+	}
+	storages, err := svc.ListStorages(ctx)
+	if err != nil || len(storages) != 2 {
+		t.Fatalf("expected 2 storages, got %v: %v", len(storages), err)
+	}
+	dir := privateDir(t)
+	if err = os.WriteFile(filepath.Join(dir, "save.txt"), []byte("old-storage"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := svc.Create(ctx, CreateSource{Name: "History test", Kind: "local", Path: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := createTestBackupJob(t, svc, ctx, first, "primary")
+	if err = svc.Manual(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ran, err := svc.scheduler.RunDue(ctx); err != nil || !ran {
+		t.Fatalf("first run failed %v, %v", ran, err)
+	}
+	if err = svc.SelectJobStorage(ctx, job.ID, alt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, "save.txt"), []byte("new-storage"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.Manual(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ran, err := svc.scheduler.RunDue(ctx); err != nil || !ran {
+		t.Fatalf("second run failed %v, %v", ran, err)
+	}
+	history, err := svc.ListSnapshots(ctx, first.ID)
+	if err != nil || len(history) != 2 {
+		t.Fatalf("history: %v, %v", history, err)
+	}
+	if history[0].RepositoryID != alt.ID || history[1].RepositoryID != "primary" {
+		t.Fatalf("repository references swapped: %+v", history)
+	}
+	for _, snapshot := range history {
+		recorder := httptest.NewRecorder()
+		if err = svc.Download(ctx, snapshot.ID, []string{"save.txt"}, true, recorder); err != nil {
+			t.Fatal(err)
+		}
+		expected := "new-storage"
+		if snapshot.RepositoryID == "primary" {
+			expected = "old-storage"
+		}
+		if recorder.Body.String() != expected {
+			t.Fatalf("bad snapshot on %s: %s", snapshot.RepositoryID, recorder.Body.String())
+		}
+	}
+	// Removal of secondary mount must not create a replacement on the root disk.
+	moved := storagePath + ".detached"
+	if err = os.Rename(storagePath, moved); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.Files(ctx, history[0].ID); err == nil {
+		t.Fatal("storage outage silently used an empty fallback")
+	}
+	if _, err = os.Stat(storagePath); !os.IsNotExist(err) {
+		t.Fatalf("detached repo path re-created unexpectedly: %v", err)
+	}
+	// Historical original snapshot from primary remains independently restorable.
+	if _, err = svc.RestoreToNewDirectory(ctx, history[1].ID, []string{"save.txt"}); err != nil {
+		t.Fatal(err)
+	}
 }
 
-func TestPasswordlessStorageSurvivesLossOfBackupHubState(t *testing.T){
- if _,err:=exec.LookPath("restic");err!=nil{
-  if os.Getenv("BACKUPHUB_RESTIC_REQUIRED")=="1"{t.Fatal(err)}
-  t.Skip("restic unavailable")
- }
- svc:=serviceFixture(t)
- ctx,cancel:=context.WithTimeout(context.Background(),4*time.Minute)
- defer cancel()
- if mode,err:=svc.DefaultRepositoryPasswordMode(ctx);err!=nil||mode!=PasswordMode{t.Fatalf("default should protect repositories: %q %v",mode,err)}
- if err:=svc.SetDefaultRepositoryPasswordMode(ctx,NoPasswordMode);err!=nil{t.Fatal(err)}
- if err:=svc.SetDefaultRepositoryPasswordMode(ctx,"unknown");err==nil{t.Fatal("accepted invalid mode")}
- if mode,err:=svc.DefaultRepositoryPasswordMode(ctx);err!=nil||mode!=NoPasswordMode{t.Fatalf("default not persisted: %q %v",mode,err)}
- repoPath:=filepath.Join(privateDir(t),"repository")
- open,err:=svc.registerStorage(ctx,"Portable disk",repoPath,"",NoPasswordMode)
- if err!=nil{t.Fatal(err)}
- if open.PasswordMode!=NoPasswordMode{t.Fatalf("mode incorrect: %+v",open)}
- keyPath:=filepath.Join(svc.catalog.DataDir,"restic-"+open.ID+".key")
- if _,err=os.Stat(keyPath);!os.IsNotExist(err){t.Fatalf("passwordless storage unexpectedly has a key file: %v",err)}
- items,err:=svc.ListStorages(ctx);if err!=nil{t.Fatal(err)}
- if len(items)!=2||items[1].PasswordMode!=NoPasswordMode{t.Fatalf("incorrect mode in storage list: %+v",items)}
- sourcePath:=privateDir(t)
- if err=os.WriteFile(filepath.Join(sourcePath,"recovery.txt"),[]byte("survived disaster"),0600);err!=nil{t.Fatal(err)}
- src,err:=svc.Create(ctx,CreateSource{Name:"Emergency recovery",Kind:"local",Path:sourcePath,IntervalMinutes:60,RepositoryID:PrimaryStorageID})
- if err!=nil{t.Fatal(err)}
- if err=svc.Manual(ctx,src.ID);err!=nil{t.Fatal(err)}
- if ran,err:=svc.scheduler.RunDue(ctx);err!=nil||!ran{t.Fatalf("protected run failed %v %v",ran,err)}
- if err=svc.SelectSourceStorage(ctx,src.ID,open.ID);err!=nil{t.Fatal(err)}
- if err=svc.Manual(ctx,src.ID);err!=nil{t.Fatal(err)}
- if ran,err:=svc.scheduler.RunDue(ctx);err!=nil||!ran{t.Fatalf("passwordless run failed %v %v",ran,err)}
- snaps,err:=svc.ListSnapshots(ctx,src.ID);if err!=nil||len(snaps)!=2{t.Fatalf("snapshots: %v %v",snaps,err)}
- if snaps[0].RepositoryID!=open.ID||snaps[1].RepositoryID!=PrimaryStorageID{t.Fatalf("historical repositories confused: %+v",snaps)}
- for _,snap:=range snaps{
-  recorder:=httptest.NewRecorder()
-  if err:=svc.Download(ctx,snap.ID,[]string{"recovery.txt"},true,recorder);err!=nil{t.Fatal(err)}
-  if recorder.Body.String()!="survived disaster"{t.Fatalf("failed downloading from %s",snap.RepositoryID)}
- }
- // The repo can be read with only Restic and the disk; not even the
- // BackupHub catalog or any master/repository key is available here.
- read:=exec.CommandContext(ctx,"restic","--repo",repoPath,"--insecure-no-password","snapshots","--json")
- if output,err:=read.CombinedOutput();err!=nil{t.Fatalf("passwordless repo unreadable independently: %v %s",err,output)}
- target:=privateDir(t)
- restore:=exec.CommandContext(ctx,"restic","--repo",repoPath,"--insecure-no-password","restore",snaps[0].ResticID,"--target",target)
- if output,err:=restore.CombinedOutput();err!=nil{t.Fatalf("disaster restore failed: %v %s",err,output)}
- var recovered bool
- err=filepath.WalkDir(target,func(p string,d os.DirEntry,err error)error{
-  if err!=nil{return err}
-  if !d.IsDir()&&d.Name()=="recovery.txt"{
-   data,err:=os.ReadFile(p)
-   if err!=nil{return err}
-   recovered=string(data)=="survived disaster"
-  }
-  return nil
- })
- if err!=nil||!recovered{t.Fatalf("original file not restored without BackupHub state: %v",err)}
- // The old primary is still password-protected, and the new repo cannot be
- // accidentally opened using its unrelated encryption key.
- wrong:=exec.CommandContext(ctx,"restic","--repo",repoPath,"--password-file",filepath.Join(svc.catalog.DataDir,"restic.key"),"snapshots")
- if err:=wrong.Run();err==nil{t.Fatal("passwordless repository accepted unrelated key")}
- if _,err:=svc.repositoryFor(ctx,open.ID);err!=nil{t.Fatalf("BackupHub cannot reopen passwordless repo: %v",err)}
- if _,err:=svc.repo.run(ctx,nil,"snapshots","--json");err!=nil{t.Fatalf("legacy encrypted primary broken: %v",err)}
+func TestPasswordlessStorageSurvivesLossOfBackupHubState(t *testing.T) {
+	if _, err := exec.LookPath("restic"); err != nil {
+		if os.Getenv("BACKUPHUB_RESTIC_REQUIRED") == "1" {
+			t.Fatal(err)
+		}
+		t.Skip("restic unavailable")
+	}
+	svc := serviceFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	if mode, err := svc.DefaultRepositoryPasswordMode(ctx); err != nil || mode != PasswordMode {
+		t.Fatalf("default should protect repositories: %q %v", mode, err)
+	}
+	if err := svc.SetDefaultRepositoryPasswordMode(ctx, NoPasswordMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SetDefaultRepositoryPasswordMode(ctx, "unknown"); err == nil {
+		t.Fatal("accepted invalid mode")
+	}
+	if mode, err := svc.DefaultRepositoryPasswordMode(ctx); err != nil || mode != NoPasswordMode {
+		t.Fatalf("default not persisted: %q %v", mode, err)
+	}
+	repoPath := filepath.Join(privateDir(t), "repository")
+	open, err := svc.registerStorage(ctx, "Portable disk", repoPath, "", NoPasswordMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if open.PasswordMode != NoPasswordMode {
+		t.Fatalf("mode incorrect: %+v", open)
+	}
+	keyPath := filepath.Join(svc.catalog.DataDir, "restic-"+open.ID+".key")
+	if _, err = os.Stat(keyPath); !os.IsNotExist(err) {
+		t.Fatalf("passwordless storage unexpectedly has a key file: %v", err)
+	}
+	items, err := svc.ListStorages(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[1].PasswordMode != NoPasswordMode {
+		t.Fatalf("incorrect mode in storage list: %+v", items)
+	}
+	sourcePath := privateDir(t)
+	if err = os.WriteFile(filepath.Join(sourcePath, "recovery.txt"), []byte("survived disaster"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	src, err := svc.Create(ctx, CreateSource{Name: "Emergency recovery", Kind: "local", Path: sourcePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := createTestBackupJob(t, svc, ctx, src, PrimaryStorageID)
+	if err = svc.Manual(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ran, err := svc.scheduler.RunDue(ctx); err != nil || !ran {
+		t.Fatalf("protected run failed %v %v", ran, err)
+	}
+	if err = svc.SelectJobStorage(ctx, job.ID, open.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.Manual(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ran, err := svc.scheduler.RunDue(ctx); err != nil || !ran {
+		t.Fatalf("passwordless run failed %v %v", ran, err)
+	}
+	snaps, err := svc.ListSnapshots(ctx, src.ID)
+	if err != nil || len(snaps) != 2 {
+		t.Fatalf("snapshots: %v %v", snaps, err)
+	}
+	if snaps[0].RepositoryID != open.ID || snaps[1].RepositoryID != PrimaryStorageID {
+		t.Fatalf("historical repositories confused: %+v", snaps)
+	}
+	for _, snap := range snaps {
+		recorder := httptest.NewRecorder()
+		if err := svc.Download(ctx, snap.ID, []string{"recovery.txt"}, true, recorder); err != nil {
+			t.Fatal(err)
+		}
+		if recorder.Body.String() != "survived disaster" {
+			t.Fatalf("failed downloading from %s", snap.RepositoryID)
+		}
+	}
+	// The repo can be read with only Restic and the disk; not even the
+	// BackupHub catalog or any master/repository key is available here.
+	read := exec.CommandContext(ctx, "restic", "--repo", repoPath, "--insecure-no-password", "snapshots", "--json")
+	if output, err := read.CombinedOutput(); err != nil {
+		t.Fatalf("passwordless repo unreadable independently: %v %s", err, output)
+	}
+	target := privateDir(t)
+	restore := exec.CommandContext(ctx, "restic", "--repo", repoPath, "--insecure-no-password", "restore", snaps[0].ResticID, "--target", target)
+	if output, err := restore.CombinedOutput(); err != nil {
+		t.Fatalf("disaster restore failed: %v %s", err, output)
+	}
+	var recovered bool
+	err = filepath.WalkDir(target, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && d.Name() == "recovery.txt" {
+			data, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			recovered = string(data) == "survived disaster"
+		}
+		return nil
+	})
+	if err != nil || !recovered {
+		t.Fatalf("original file not restored without BackupHub state: %v", err)
+	}
+	// The old primary is still password-protected, and the new repo cannot be
+	// accidentally opened using its unrelated encryption key.
+	wrong := exec.CommandContext(ctx, "restic", "--repo", repoPath, "--password-file", filepath.Join(svc.catalog.DataDir, "restic.key"), "snapshots")
+	if err := wrong.Run(); err == nil {
+		t.Fatal("passwordless repository accepted unrelated key")
+	}
+	if _, err := svc.repositoryFor(ctx, open.ID); err != nil {
+		t.Fatalf("BackupHub cannot reopen passwordless repo: %v", err)
+	}
+	if _, err := svc.repo.run(ctx, nil, "snapshots", "--json"); err != nil {
+		t.Fatalf("legacy encrypted primary broken: %v", err)
+	}
 }

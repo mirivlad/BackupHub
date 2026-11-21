@@ -158,13 +158,7 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 				if !decode(w, r, &input) {
 					return
 				}
-				var output backup.Source
-				var err error
-				if input.IntervalMinutes > 0 {
-					output, err = s.backup.Create(r.Context(), input)
-				} else {
-					output, err = s.backup.CreateUnscheduled(r.Context(), input)
-				}
+				output, err := s.backup.Create(r.Context(), input)
 				if err != nil {
 					fail(err)
 					return
@@ -219,6 +213,23 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		switch action {
+		case "storage":
+			if !isAdmin {
+				jsonResponse(w, 403, map[string]string{"error": "admin required"})
+				return
+			}
+			var req struct {
+				RepositoryID string `json:"repository_id"`
+			}
+			if !decode(w, r, &req) {
+				return
+			}
+			if err := s.backup.SelectJobStorage(r.Context(), id, req.RepositoryID); err != nil {
+				fail(err)
+				return
+			}
+			s.backup.Audit(r.Context(), user.ID, "job.storage_changed", id)
+			jsonResponse(w, 200, map[string]string{"repository_id": req.RepositoryID})
 		case "run":
 			if err := s.backup.Manual(r.Context(), id); err != nil {
 				fail(err)
@@ -267,53 +278,6 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, 200, map[string]any{"entries": entries})
 		default:
 			jsonResponse(w, 404, map[string]string{"error": "unknown storage operation"})
-		}
-		return
-	}
-	if len(path) == 3 && path[0] == "sources" {
-		id, operation := path[1], path[2]
-		if !canBackup || r.Method != http.MethodPost {
-			jsonResponse(w, 403, map[string]string{"error": "backup permission and POST required"})
-			return
-		}
-		switch operation {
-		case "storage":
-			if !isAdmin {
-				jsonResponse(w, 403, map[string]string{"error": "admin required"})
-				return
-			}
-			var req struct {
-				RepositoryID string `json:"repository_id"`
-			}
-			if !decode(w, r, &req) {
-				return
-			}
-			if err := s.backup.SelectSourceStorage(r.Context(), id, req.RepositoryID); err != nil {
-				fail(err)
-				return
-			}
-			s.backup.Audit(r.Context(), user.ID, "source.storage_changed", id)
-			jsonResponse(w, 200, map[string]string{"repository_id": req.RepositoryID})
-		case "run":
-			if err := s.backup.Manual(r.Context(), id); err != nil {
-				fail(err)
-				return
-			}
-			s.backup.Audit(r.Context(), user.ID, "backup.queued", id)
-			jsonResponse(w, 202, map[string]any{"queued": true, "source_id": id})
-		case "pause", "resume":
-			if !isAdmin {
-				jsonResponse(w, 403, map[string]string{"error": "admin required"})
-				return
-			}
-			if err := s.backup.Pause(r.Context(), id, operation == "resume"); err != nil {
-				fail(err)
-				return
-			}
-			s.backup.Audit(r.Context(), user.ID, "schedule."+operation, id)
-			jsonResponse(w, 200, map[string]any{"source_id": id, "enabled": operation == "resume"})
-		default:
-			jsonResponse(w, 404, map[string]string{"error": "unknown source operation"})
 		}
 		return
 	}
