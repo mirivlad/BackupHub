@@ -43,6 +43,8 @@ case "${1:-}" in
       ;;
     esac
   fi
+  echo "Administrator configuration status:"
+  runuser -u backuphub -- /usr/bin/backuphub admin-status -data-dir /var/lib/backuphub || true
   echo "If you skipped initial setup, run:"
   echo "  sudo runuser -u backuphub -- backuphub setup-admin -data-dir /var/lib/backuphub"
   echo "Alternatively obtain a one-time token with 'backuphub bootstrap' and create the administrator in the browser."

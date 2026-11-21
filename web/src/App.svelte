@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import BackupPane from './BackupPane.svelte';
+  import NavIcon from './NavIcon.svelte';
   import SettingsPane from './SettingsPane.svelte';
 
   type User = { id: string; username: string; role: string };
@@ -12,7 +13,21 @@
   type View = 'loading' | 'bootstrap' | 'login' | 'dashboard' | 'error';
 
   let view = $state<View>('loading');
-  let activeTab = $state<'overview' | 'audit' | 'backup' | 'settings'>('overview');
+  type Section='overview'|'jobs'|'sources'|'storages'|'schedules'|'history'|'runs';
+  type Tab=Section|'audit'|'settings';
+  let activeTab=$state<Tab>('overview');
+  const navItems=[
+   {id:'overview',label:'Обзор',icon:'overview',group:'main'},
+   {id:'jobs',label:'Задания',icon:'jobs',group:'main'},
+   {id:'sources',label:'Источники',icon:'sources',group:'main'},
+   {id:'storages',label:'Хранилища',icon:'storages',group:'main'},
+   {id:'schedules',label:'Расписания',icon:'schedules',group:'main'},
+   {id:'history',label:'История копий',icon:'history',group:'history'},
+   {id:'runs',label:'Журнал выполнения',icon:'runs',group:'history'},
+   {id:'audit',label:'События безопасности',icon:'audit',group:'system'},
+   {id:'settings',label:'Настройки',icon:'settings',group:'system'}
+  ] as const;
+  function navigate(tab:Section){activeTab=tab;}
   let busy = $state(false);
   let errorMessage = $state('');
   let notice = $state('');
@@ -130,14 +145,14 @@
       {#if view === 'bootstrap'}
         <span class="eyebrow">ПЕРВОНАЧАЛЬНАЯ НАСТРОЙКА</span>
         <h1>Создание администратора</h1>
-        <p class="secondary">Выполните <code>backuphub bootstrap</code> на сервере и введите одноразовый токен. Токен действителен 20 минут.</p>
+        <p class="secondary">На этом сервере ещё нет администратора. Выполните <code>backuphub bootstrap</code> и введите полученный одноразовый токен. Если администратор уже создавался, проверьте каталог данных запущенного сервиса.</p>
         <form onsubmit={(event) => { event.preventDefault(); void createAdministrator(); }}>
           <label for="bootstrap-token">Одноразовый токен</label>
           <input id="bootstrap-token" type="password" bind:value={bootstrapToken} autocomplete="off" required placeholder="Токен с сервера" />
           <label for="setup-user">Имя администратора</label>
           <input id="setup-user" bind:value={username} autocomplete="username" minlength="3" maxlength="64" required />
           <label for="setup-password">Пароль</label>
-          <input id="setup-password" type="password" bind:value={password} autocomplete="new-password" minlength="12" required placeholder="Не менее 12 символов" />
+          <input id="setup-password" type="password" bind:value={password} autocomplete="new-password" minlength="8" required placeholder="Не менее 8 символов" />
           {#if errorMessage}<p class="error" role="alert">{errorMessage}</p>{/if}
           <button type="submit" disabled={busy}>{busy ? 'Сохранение…' : 'Создать администратора'}</button>
         </form>
@@ -155,48 +170,38 @@
           <button type="submit" disabled={busy}>{busy ? 'Проверка…' : 'Войти'}</button>
         </form>
       {/if}
-      <p class="footnote">Один независимый BackupHub на площадку · GPL-3.0</p>
+
     </section>
   </main>
 {:else}
   <div class="shell">
-    <aside class="sidebar">
-      <div class="brandline"><div class="brand-icon">B</div><div><span class="wordmark">BackupHub</span><span class="brand-caption">Резервное копирование</span></div></div>
-      <div class="side-section">МОНИТОРИНГ</div>
-      <button class:active={activeTab === 'overview'} class="nav-button" onclick={() => activeTab = 'overview'}>Обзор</button>
-      {#if canAudit}<button class:active={activeTab === 'audit'} class="nav-button" onclick={() => activeTab = 'audit'}>События</button>{/if}
-      <div class="side-section">УПРАВЛЕНИЕ</div>
-      <button class:active={activeTab === 'backup'} class="nav-button" onclick={() => activeTab = 'backup'}>Хранилища, задания и история</button>
-      {#if isAdmin}<button class:active={activeTab === 'settings'} class="nav-button" onclick={() => activeTab = 'settings'}>Настройки</button>{/if}
-      <div class="sidebar-bottom">Предварительная версия · проверьте восстановление до использования</div>
-    </aside>
-    <div class="content-shell">
-      <header class="topbar"><span class="topbar-title">{activeTab === 'overview' ? 'Обзор системы' : activeTab === 'backup' ? 'Источники и история' : activeTab === 'settings' ? 'Настройки' : 'Журнал безопасности'}</span><div class="topbar-user"><span>{user?.username} · {roleName[user?.role ?? ''] ?? user?.role}</span><button class="text-button" onclick={() => void logout()} disabled={busy}>Выйти</button></div></header>
-      <main class="dashboard">
-        {#if errorMessage}<p class="error" role="alert">{errorMessage}</p>{/if}
-        {#if activeTab === 'overview'}
-          <div class="heading"><div><span class="eyebrow">СОСТОЯНИЕ СИСТЕМЫ</span><h1>BackupHub</h1><p class="secondary">Сведения о данном автономном экземпляре.</p></div><button class="outline" onclick={() => void refreshDashboard()}>Обновить</button></div>
-          <div class="warning"><strong>Ранняя функциональная версия.</strong><span>Основные файловые сценарии работают, но не заменяют проверенное восстановление приложений. После добавления источника обязательно проверьте реальный снимок и его экспорт.</span></div>
-          <div class="stat-grid">
-            <section class="stat-card"><span>Состояние API</span><strong>{health?.service === 'running' ? 'Работает' : 'Нет данных'}</strong><small>Версия {health?.version ?? '—'}</small></section>
-            <section class="stat-card"><span>Готовность копирования</span><strong>{health?.backups_available ? 'Доступно' : 'Не готово'}</strong><small>Факт запуска не подтверждает восстановимость данных</small></section>
-            <section class="stat-card"><span>Схема каталога</span><strong>{identity?.schema_version ?? '—'}</strong><small>SQLite / автономный экземпляр</small></section>
-          </div>
-          <section class="detail-card"><h2>Идентификатор экземпляра</h2><code class="instance-id">{identity?.instance_uuid ?? '—'}</code><p class="secondary">Используется для разграничения независимых площадок и будущего объединённого просмотра.</p></section>
-          <section class="detail-card"><h2>Рабочие возможности</h2><p class="secondary">В разделе «Источники, история и восстановление» можно создавать задания, просматривать завершённые снимки, скачивать выбранные файлы и папки ZIP и восстанавливать в новый каталог на сервере. PostgreSQL 1С split-config, Active Directory, SMB1, email и полноценная ротация ещё не готовы.</p></section>
-        {:else if activeTab === 'backup'}
-          <BackupPane role={user?.role ?? ''} />
-        {:else if activeTab === 'settings' && isAdmin}
-          <SettingsPane />
-        {:else if canAudit}
-          <div class="heading"><div><span class="eyebrow">БЕЗОПАСНОСТЬ</span><h1>Журнал событий</h1><p class="secondary">Последние 20 событий авторизации и администрирования.</p></div><button class="outline" onclick={() => void refreshDashboard()}>Обновить</button></div>
-          <section class="detail-card">
-            {#if events.length === 0}<p class="secondary">Записей пока нет.</p>{:else}
-              <div class="table-scroll"><table><thead><tr><th>Дата</th><th>Действие</th><th>Объект</th><th>Идентификатор пользователя</th></tr></thead><tbody>{#each events as event (event.id)}<tr><td>{localDate(event.at)}</td><td><code>{event.action}</code></td><td>{event.resource}</td><td><code>{event.actor}</code></td></tr>{/each}</tbody></table></div>
-            {/if}
-          </section>
-        {/if}
-      </main>
+   <aside class="sidebar">
+    <div class="brandline"><div class="brand-icon"><span class="logo-mark">B</span></div><div><span class="wordmark">BackupHub</span><span class="brand-caption">Центр резервного копирования</span></div></div>
+    <div class="sidebar-navigation">
+     {#each ['main','history','system'] as group}
+      <p class="side-section">{group==='main'?'УПРАВЛЕНИЕ':group==='history'?'МОНИТОРИНГ':'СИСТЕМА'}</p>
+      {#each navItems.filter(item=>item.group===group && (item.id!=='audit'||canAudit) && (item.id!=='settings'||isAdmin)) as item (item.id)}
+       <button class="nav-button" class:active={activeTab===item.id} onclick={()=>activeTab=item.id}><NavIcon name={item.icon} size={18}/><span>{item.label}</span></button>
+      {/each}
+     {/each}
     </div>
+    <div class="sidebar-bottom"><span class="side-status-dot"></span><span>{health?.service==='running'?'Сервер доступен':'Состояние неизвестно'}</span></div>
+   </aside>
+   <div class="content-shell">
+    <header class="topbar"><div class="breadcrumbs">BackupHub <span>/</span> {navItems.find(i=>i.id===activeTab)?.label??'Обзор'}</div><div class="topbar-user"><div class="user-avatar">{user?.username.slice(0,1).toUpperCase()}</div><div class="user-title"><strong>{user?.username}</strong><small>{roleName[user?.role??'']??user?.role}</small></div><button class="logout-button" title="Выйти" aria-label="Выйти" onclick={()=>void logout()} disabled={busy}><NavIcon name="logout"/></button></div></header>
+    <main class="dashboard">
+     {#if errorMessage}<div class="error" role="alert">{errorMessage}</div>{/if}
+     {#if activeTab==='settings' && isAdmin}
+      <SettingsPane/>
+     {:else if activeTab==='audit' && canAudit}
+      <div class="workspace-header"><div><span class="eyebrow">БЕЗОПАСНОСТЬ</span><h1>События безопасности</h1><p class="secondary">Изменения конфигурации и действия пользователей.</p></div><button class="outline" onclick={()=>void refreshDashboard()}>Обновить</button></div>
+      <section class="detail-card">
+       {#if events.length===0}<p class="secondary">Пока нет событий.</p>{:else}<div class="table-scroll"><table><thead><tr><th>Время</th><th>Действие</th><th>Объект</th><th>Пользователь</th></tr></thead><tbody>{#each events as event(event.id)}<tr><td>{localDate(event.at)}</td><td>{event.action}</td><td>{event.resource}</td><td><code>{event.actor.slice(0,12)}</code></td></tr>{/each}</tbody></table></div>{/if}
+      </section>
+     {:else}
+      <BackupPane section={activeTab as Section} role={user?.role??''} onNavigate={navigate}/>
+     {/if}
+    </main>
+   </div>
   </div>
 {/if}

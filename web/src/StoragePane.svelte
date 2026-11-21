@@ -62,7 +62,7 @@
  onMount(()=>{void load();});
 </script>
 <section class="detail-card">
- <div class="storage-heading"><div><h2>Хранилища резервных копий</h2><p class="secondary">Каждый путь — отдельный Restic-репозиторий. Защита паролем выбирается при создании. У каждого задания своё хранилище.</p></div><button class="outline" onclick={()=>void load()} disabled={busy}>Обновить диски</button></div>
+ <div class="storage-heading"><div><h2>Подключённые хранилища</h2><p class="secondary">Подключённые тома и доступное место для резервных копий.</p></div><button class="outline" onclick={()=>void load()} disabled={busy}>Обновить диски</button></div>
  {#if error}<p class="error" role="alert">{error}</p>{/if}
  {#if notice}<p class="notice" role="status">{notice}</p>{/if}
  <div class="storage-grid">
@@ -71,7 +71,7 @@
   {/each}
  </div>
  <h3>Добавить новое хранилище</h3>
- <p class="secondary">Выбери смонтированный том, открой нужную папку и создай там отдельный каталог BackupHub. Системные каталоги скрыты. У уже существующих данных права не меняются.</p>
+ <p class="secondary">Выберите диск и каталог для сохранения резервных копий.</p>
  {#if mounts.length===0}
   <p class="secondary">Подходящих смонтированных томов нет. Подключи диск или сетевое хранилище в /mnt, /media, /backup, /backup2 либо /srv/backups.</p>
  {:else}
@@ -85,7 +85,7 @@
     <div class="storage-heading"><strong>Выбранная папка: <code>{chosen}</code></strong><button class="text-button" disabled={busy||chosen===selectedMount} onclick={back}>На уровень выше</button></div>
     <div class="storage-folders">
      {#each entries as entry (entry.path)}
-      <button class="outline" disabled={busy} onclick={()=>void browse(entry.path)}>📁 {entry.name}</button>
+      <button class="outline" disabled={busy} onclick={()=>void browse(entry.path)}>{entry.name}</button>
      {/each}
      {#if entries.length===0}<p class="secondary">Нет вложенных каталогов.</p>{/if}
     </div>
@@ -109,9 +109,9 @@
 <style>
  .storage-heading{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px}
  .storage-heading h2{margin:0 0 6px}.storage-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:20px}
- .storage-item{display:grid;gap:7px;padding:13px;border:1px solid #405474;border-radius:9px}.storage-item code{overflow-wrap:anywhere}.storage-item small{opacity:.75}
+ .storage-item{display:grid;gap:7px;padding:13px;border:1px solid var(--line);border-radius:9px}.storage-item code{overflow-wrap:anywhere}.storage-item small{opacity:.75}
  .mount-list{display:flex;gap:9px;flex-wrap:wrap}.mount-list button{white-space:normal;text-align:left}
- .storage-browser{margin-top:14px;border:1px solid #405474;border-radius:9px;padding:14px}.storage-folders{display:flex;gap:8px;flex-wrap:wrap;max-height:210px;overflow:auto;margin-bottom:14px}
+ .storage-browser{margin-top:14px;border:1px solid var(--line);border-radius:9px;padding:14px}.storage-folders{display:flex;gap:8px;flex-wrap:wrap;max-height:210px;overflow:auto;margin-bottom:14px}
  .storage-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;align-items:end}
- .storage-form label{display:grid;gap:6px}.storage-info{grid-column:1/-1}.storage-checkbox{grid-column:1/-1;display:flex!important;flex-direction:row;align-items:center}.storage-checkbox input{width:auto!important}.storage-form input,.storage-form select{background:#172338;color:#eee;border:1px solid #405474;border-radius:7px;padding:10px;min-width:0;width:100%}
+ .storage-form label{display:grid;gap:6px}.storage-info{grid-column:1/-1}.storage-checkbox{grid-column:1/-1;display:flex!important;flex-direction:row;align-items:center}.storage-checkbox input{width:auto!important}.storage-form input,.storage-form select{background:#fff;color:var(--text);border:1px solid var(--line);border-radius:7px;padding:10px;min-width:0;width:100%}
 </style>

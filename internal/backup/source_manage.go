@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Service) ListSources(ctx context.Context) ([]Source, error) {
-	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT src.id,src.display_name,src.kind,src.settings_json,sch.interval_seconds,sch.next_run_unix,sch.enabled,COALESCE(sr.repository_id,'primary') FROM sources src JOIN schedule_entries sch ON sch.id=src.id LEFT JOIN schedule_repositories sr ON sr.schedule_id=sch.id ORDER BY src.display_name`)
+	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT id,display_name,kind,settings_json FROM sources ORDER BY display_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -19,9 +19,7 @@ func (s *Service) ListSources(ctx context.Context) ([]Source, error) {
 	for rows.Next() {
 		var out Source
 		var encoded string
-		var seconds, next int64
-		var enabled int
-		if err = rows.Scan(&out.ID, &out.Name, &out.Kind, &encoded, &seconds, &next, &enabled,&out.RepositoryID); err != nil {
+		if err = rows.Scan(&out.ID, &out.Name, &out.Kind, &encoded); err != nil {
 			return nil, err
 		}
 		var settings Settings
@@ -33,9 +31,6 @@ func (s *Service) ListSources(ctx context.Context) ([]Source, error) {
 		out.Share = settings.Share
 		out.Username = settings.Username
 		out.Database = settings.Database
-		out.IntervalMinutes = int(seconds / 60)
-		out.NextRun = time.Unix(next, 0).UTC().Format(time.RFC3339)
-		out.Enabled = enabled != 0
 		result = append(result, out)
 	}
 	return result, rows.Err()

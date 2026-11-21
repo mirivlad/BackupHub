@@ -16,31 +16,25 @@ import (
 )
 
 type CreateSource struct {
-	Name            string `json:"name"`
-	Kind            string `json:"kind"`
-	Host            string `json:"host"`
-	Share           string `json:"share"`
-	Path            string `json:"path"`
-	Username        string `json:"username"`
-	Password        string `json:"password"`
-	Database        string `json:"database"`
-	IntervalMinutes int    `json:"interval_minutes"`
-	RepositoryID string `json:"repository_id"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Host     string `json:"host"`
+	Share    string `json:"share"`
+	Path     string `json:"path"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Database string `json:"database"`
 }
 type Settings struct{ Host, Share, Path, Username, Database string }
 type Source struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Kind            string `json:"kind"`
-	Host            string `json:"host"`
-	Share           string `json:"share"`
-	Path            string `json:"path"`
-	Username        string `json:"username"`
-	Database        string `json:"database"`
-	IntervalMinutes int    `json:"interval_minutes"`
-	RepositoryID string `json:"repository_id"`
-	NextRun         string `json:"next_run,omitempty"`
-	Enabled         bool   `json:"enabled"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Host     string `json:"host"`
+	Share    string `json:"share"`
+	Path     string `json:"path"`
+	Username string `json:"username"`
+	Database string `json:"database"`
 }
 type Snapshot struct {
 	RepositoryID string `json:"repository_id"`
@@ -66,7 +60,7 @@ type Service struct {
 	catalog   *catalog.Catalog
 	vault     *vault.Vault
 	repo      *repository
-	repoMu sync.Mutex
+	repoMu    sync.Mutex
 	scheduler *scheduler.Scheduler
 	stageDir  string
 	wake      chan struct{}
@@ -95,8 +89,10 @@ func New(ctx context.Context, c *catalog.Catalog, v *vault.Vault, repoPath, stag
 		return nil, err
 	}
 
- if err=ensurePrimaryStorage(ctx,c,repo.path);err!=nil{return nil,err}
- svc := &Service{catalog: c, vault: v, repo: repo, stageDir: stageDir, wake: make(chan struct{}, 1)}
+	if err = ensurePrimaryStorage(ctx, c, repo.path); err != nil {
+		return nil, err
+	}
+	svc := &Service{catalog: c, vault: v, repo: repo, stageDir: stageDir, wake: make(chan struct{}, 1)}
 	svc.scheduler = scheduler.New(c, svc)
 	return svc, nil
 }
