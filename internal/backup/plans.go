@@ -34,6 +34,9 @@ type BackupJob struct {
 	RepositoryID string          `json:"repository_id"`
 	Schedule     ScheduleProfile `json:"schedule"`
 	Enabled      bool            `json:"enabled"`
+	Running      bool            `json:"running"`
+	ManualQueued bool            `json:"manual_queued"`
+	CurrentState string          `json:"current_state,omitempty"`
 	NextRun      string          `json:"next_run"`
 }
 type CreateBackupJob struct {
@@ -220,8 +223,10 @@ func (s *Service) ListJobs(ctx context.Context) ([]BackupJob, error) {
  CASE WHEN COALESCE(p.cron_expression,'')<>'' THEN 'cron' ELSE COALESCE(p.mode,'interval') END,COALESCE(p.interval_minutes,e.interval_seconds/60),
  COALESCE(p.days_of_week,''),COALESCE(p.hour,0),COALESCE(p.minute,0),
  COALESCE(p.timezone,'UTC'),COALESCE(p.start_at_unix,0),
- COALESCE(p.interval_unit,'minutes'),COALESCE(p.interval_value,e.interval_seconds/60),COALESCE(p.cron_expression,'')
+ COALESCE(p.interval_unit,'minutes'),COALESCE(p.interval_value,e.interval_seconds/60),COALESCE(p.cron_expression,''),
+ COALESCE(e.active_run_id,''),e.manual_pending,COALESCE(active.state,'')
  FROM schedule_entries e JOIN sources src ON src.id=e.dataset_id
+ LEFT JOIN schedule_runs active ON active.id=e.active_run_id
  LEFT JOIN schedule_profiles p ON p.id=e.profile_id
  LEFT JOIN schedule_repositories sr ON sr.schedule_id=e.id
  WHERE e.kind='backup' ORDER BY e.created_at DESC,e.id DESC`)
@@ -234,9 +239,11 @@ func (s *Service) ListJobs(ctx context.Context) ([]BackupJob, error) {
 		var j BackupJob
 		var enabled, minutes int
 		var next, anchor int64
+		var activeID, activeState string
+		var pending int
 		var p ScheduleProfile
 		if err = rows.Scan(&j.ID, &j.Name, &j.SourceID, &j.SourceName, &j.RepositoryID, &enabled, &next,
-			&p.Mode, &minutes, &p.DaysOfWeek, &p.Hour, &p.Minute, &p.Timezone, &anchor, &p.IntervalUnit, &p.IntervalValue, &p.CronExpression); err != nil {
+			&p.Mode, &minutes, &p.DaysOfWeek, &p.Hour, &p.Minute, &p.Timezone, &anchor, &p.IntervalUnit, &p.IntervalValue, &p.CronExpression, &activeID, &pending, &activeState); err != nil {
 			return nil, err
 		}
 		if anchor > 0 {
@@ -250,6 +257,9 @@ func (s *Service) ListJobs(ctx context.Context) ([]BackupJob, error) {
 		}
 		j.Schedule = p
 		j.Enabled = enabled != 0
+		j.Running = activeID != ""
+		j.CurrentState = activeState
+		j.ManualQueued = pending != 0
 		j.NextRun = time.Unix(next, 0).UTC().Format(time.RFC3339)
 		out = append(out, j)
 	}

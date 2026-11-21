@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 10
+const SchemaVersion = 11
 
 // Catalog stores operational state; the portable repository manifest must
 // remain sufficient for rebuilding the snapshot index after database loss.
@@ -327,6 +327,33 @@ func migrate(ctx context.Context, db *sql.DB) error {
             first_seen TEXT NOT NULL
         )`); err != nil {
 			return fmt.Errorf("v10 ssh host key migration: %w", err)
+		}
+	}
+	if version < 11 {
+		columns := map[string]bool{}
+		rows, queryErr := tx.QueryContext(ctx, `PRAGMA table_info(schedule_entries)`)
+		if queryErr != nil {
+			return queryErr
+		}
+		for rows.Next() {
+			var cid, notnull, pk int
+			var name, typ string
+			var def sql.NullString
+			if err = rows.Scan(&cid, &name, &typ, &notnull, &def, &pk); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			columns[name] = true
+		}
+		if err = rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		_ = rows.Close()
+		if !columns["manual_pending"] {
+			if _, err = tx.ExecContext(ctx, `ALTER TABLE schedule_entries ADD COLUMN manual_pending INTEGER NOT NULL DEFAULT 0 CHECK(manual_pending IN (0,1))`); err != nil {
+				return fmt.Errorf("v11 manual-run migration: %w", err)
+			}
 		}
 	}
 	if _, err = tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", SchemaVersion)); err != nil {

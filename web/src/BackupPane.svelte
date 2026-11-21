@@ -6,7 +6,7 @@
  type Source={id:string;name:string;kind:string;host:string;share:string;path:string;username:string;database:string;access_status?:string;access_hint?:string;auth_method?:string;host_key_fingerprint?:string;};
  type Storage={id:string;name:string;path:string;free_bytes:number;status:string;password_mode:string};
  type Profile={mode:'interval'|'daily'|'weekly'|'cron';interval_value:number;interval_unit:string;days_of_week:string;hour:number;minute:number;timezone:string;first_run:string;cron_expression?:string};
- type Job={id:string;name:string;source_id:string;source_name:string;repository_id:string;schedule:Profile;enabled:boolean;next_run:string;queued?:boolean};
+ type Job={id:string;name:string;source_id:string;source_name:string;repository_id:string;schedule:Profile;enabled:boolean;next_run:string;running:boolean;manual_queued:boolean;current_state?:string};
  type Snapshot={id:string;source_id:string;source_name:string;kind:string;created_at:string;verification:string;fidelity:string;consistency:string};
  type Run={id:string;task_id:string;state:string;started_at:string;finished_at?:string;failure_code?:string};
  type File={path:string;name:string;type:string;size:number;modified:string};
@@ -42,6 +42,14 @@
  const availableStorages=$derived(storages.filter(s=>s.status==='available'));
  const activeJobs=$derived(jobs.filter(j=>j.enabled));
  const failedRuns=$derived(runs.filter(r=>r.state==='failed'||r.state==='interrupted'));
+ function elapsed(v:string){
+  const age=Math.max(0,Math.floor((Date.now()-new Date(v).getTime())/1000));
+  if(!Number.isFinite(age))return '';
+  return age>=3600?Math.floor(age/3600)+' ч '+Math.floor((age%3600)/60)+' мин':Math.floor(age/60)+' мин '+age%60+' с';
+ }
+ function activeRun(job:Job){
+  return runs.find(r=>r.task_id===job.id&&!r.finished_at);
+ }
  const fmt=(v:string)=>{if(!v)return '—';const d=new Date(v);return Number.isNaN(d.getTime())?'—':d.toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'});};
  const size=(bytes:number)=>new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(bytes/1073741824)+' ГиБ';
  function sourceType(kind:string){return ({smb:'SMB',sftp:'SFTP',postgres:'PostgreSQL',local:'Локальный каталог'} as Record<string,string>)[kind]??kind;}
@@ -112,13 +120,38 @@
   if(!r.ok)throw new Error(body?.error??'Ошибка запроса: HTTP '+r.status);return body as T;}
  function jsonBody(value:unknown):RequestInit{return {method:'POST',headers:{'Content-Type':'application/json','X-BackupHub-CSRF':csrf()},body:JSON.stringify(value)};}
  function actionBody():RequestInit{return {method:'POST',headers:{'X-BackupHub-CSRF':csrf()}};}
- async function refresh(){busy=true;error='';
-  try{const [a,b,c,d,e]=await Promise.all([
-   api<{sources:Source[]}>('/sources'),api<{storages:Storage[]}>('/storages'),api<{jobs:Job[]}>('/jobs'),
-   api<{snapshots:Snapshot[]}>('/snapshots'),api<{runs:Run[]}>('/runs')]);
-   sources=a.sources;storages=b.storages;jobs=c.jobs;snapshots=d.snapshots;runs=e.runs;loaded=true;
+ async function refresh(){
+  busy=true;error='';
+  try{
+   const responses=await Promise.allSettled([
+    api<{sources:Source[]}>('/sources'),
+    api<{storages:Storage[]}>('/storages'),
+    api<{jobs:Job[]}>('/jobs'),
+    api<{snapshots:Snapshot[]}>('/snapshots'),
+    api<{runs:Run[]}>('/runs')
+   ]);
+   if(responses[0].status==='fulfilled')sources=responses[0].value.sources;
+   if(responses[1].status==='fulfilled')storages=responses[1].value.storages;
+   if(responses[2].status==='fulfilled')jobs=responses[2].value.jobs;
+   if(responses[3].status==='fulfilled')snapshots=responses[3].value.snapshots;
+   if(responses[4].status==='fulfilled')runs=responses[4].value.runs;
+   const names=['Источники','Хранилища','Задания','История копий','Журнал выполнения'];
+   const failures=responses.flatMap((r,i)=>r.status==='rejected'?[names[i]+': '+(r.reason instanceof Error?r.reason.message:'ошибка запроса')]:[]);
+   if(failures.length>0)error=failures.join('; ');
+   loaded=true;
   }catch(e){error=e instanceof Error?e.message:'Данные недоступны';}
   finally{busy=false;}
+ }
+ async function refreshRuntime(){
+  // Poll only the lightweight SQLite endpoints; never force restic list/
+  // storage discovery while a backup is running.
+  try{
+   const [j,r]=await Promise.all([
+    api<{jobs:Job[]}>('/jobs'),
+    api<{runs:Run[]}>('/runs')
+   ]);
+   jobs=j.jobs;runs=r.runs;
+  }catch{ /* Keep the last known state; manual Refresh gives diagnostics. */ }
  }
  async function runAction(fn:()=>Promise<void>){busy=true;error='';notice='';
   try{await fn();editing=false;await refresh();}catch(e){error=e instanceof Error?e.message:'Операция не выполнена';}
@@ -155,6 +188,8 @@
   const d=new Date();d.setDate(d.getDate()+1);
   scheduleForm.startDate=[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
   void refresh();
+  const poll=setInterval(()=>{if(!busy)void refreshRuntime();},5000);
+  return ()=>clearInterval(poll);
  });
  $effect(()=>{
   const scheduleKey=[scheduleForm.mode,scheduleForm.time,scheduleForm.startDate,scheduleForm.timezone,scheduleForm.interval,scheduleForm.unit,scheduleForm.weekdays.join(','),cronExpr].join('|');
@@ -328,8 +363,13 @@
      <td>{storages.find(s=>s.id===j.repository_id)?.name??j.repository_id}</td>
      <td class="wrap-cell">{scheduleText(j.schedule)}</td>
      <td>{j.enabled?fmt(j.next_run):'—'}</td>
-     <td><span class:muted={!j.enabled} class="status">{j.enabled?'Активно':'Пауза'}</span></td>
-     <td class="action-cell">{#if canRun}<button class="text-button" onclick={()=>void jobAction(j.id,'run')} disabled={busy||!j.enabled}>Запустить сейчас</button>{/if}
+     <td>
+      <span class:muted={!j.enabled} class="status">{j.running?stateLabel(j.current_state||'queued'):j.manual_queued?'Запуск в очереди':j.enabled?'По расписанию':'Пауза'}</span>
+      {#if j.running&&activeRun(j)}
+       <small class="subline">Выполняется: {elapsed(activeRun(j)!.started_at)}</small>
+      {/if}
+     </td>
+     <td class="action-cell">{#if canRun}<button class="text-button" onclick={()=>void jobAction(j.id,'run')} disabled={busy||!j.enabled||j.running||j.manual_queued} title={j.running?'Задание уже выполняется':j.manual_queued?'Запуск уже в очереди':'Выполнить копирование сейчас'}>Запустить сейчас</button>{/if}
       {#if canConfigure}<button class="text-button" onclick={()=>beginEditJob(j)} disabled={busy}>Изменить</button>
       <button class="text-button" onclick={()=>void jobAction(j.id,j.enabled?'pause':'resume')} disabled={busy}>{j.enabled?'Пауза':'Включить'}</button>{/if}</td>
     </tr>{/each}</tbody></table></div>{/if}

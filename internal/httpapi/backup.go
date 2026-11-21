@@ -42,6 +42,14 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, 404, map[string]string{"error": "resource not found"})
 			return
 		}
+		if errors.Is(err, backup.ErrJobAlreadyRunning) {
+			jsonResponse(w, http.StatusConflict, map[string]string{"error": "Задание уже выполняется или ожидает запуска. Повторный запуск невозможен до завершения."})
+			return
+		}
+		if errors.Is(err, backup.ErrJobPaused) {
+			jsonResponse(w, http.StatusConflict, map[string]string{"error": "Задание приостановлено. Сначала включите его."})
+			return
+		}
 		jsonResponse(w, 400, map[string]string{"error": publicError(err)})
 	}
 	if len(path) == 1 {

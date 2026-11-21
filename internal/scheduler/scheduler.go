@@ -138,9 +138,10 @@ func (s *Scheduler) RunDue(ctx context.Context) (bool, error) {
 	var t Task
 	var seconds, nextUnix int64
 	var enabled int
-	err = tx.QueryRowContext(ctx, `SELECT id,dataset_id,kind,interval_seconds,next_run_unix,enabled
- FROM schedule_entries WHERE enabled=1 AND active_run_id IS NULL AND next_run_unix<=?
- ORDER BY next_run_unix,id LIMIT 1`, s.now().Unix()).Scan(&t.ID, &t.DatasetID, &t.Kind, &seconds, &nextUnix, &enabled)
+	var pending int
+	err = tx.QueryRowContext(ctx, `SELECT id,dataset_id,kind,interval_seconds,next_run_unix,enabled,manual_pending
+ FROM schedule_entries WHERE enabled=1 AND active_run_id IS NULL AND (manual_pending=1 OR next_run_unix<=?)
+ ORDER BY manual_pending DESC,next_run_unix,id LIMIT 1`, s.now().Unix()).Scan(&t.ID, &t.DatasetID, &t.Kind, &seconds, &nextUnix, &enabled, &pending)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -155,7 +156,7 @@ func (s *Scheduler) RunDue(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	now := s.now()
-	res, err := tx.ExecContext(ctx, `UPDATE schedule_entries SET active_run_id=? WHERE id=? AND active_run_id IS NULL`, runID, t.ID)
+	res, err := tx.ExecContext(ctx, `UPDATE schedule_entries SET active_run_id=?,manual_pending=0 WHERE id=? AND active_run_id IS NULL`, runID, t.ID)
 	if err != nil {
 		return false, err
 	}
@@ -231,8 +232,18 @@ func (s *Scheduler) RunDue(ctx context.Context) (bool, error) {
 	if nextErr != nil {
 		return true, fmt.Errorf("calculate next schedule: %w", nextErr)
 	}
+	// A manual invocation cannot advance a still-future planned occurrence.
+	// If the manual run crossed that occurrence, the normal calculator has
+	// already selected the next future recurrence.
+	if pending != 0 && nextUnix > completed.Unix() {
+		nextRun = time.Unix(nextUnix, 0).UTC()
+	}
 	if finalState == domain.JobWaiting {
-		nextRun = completed.Add(min(t.Interval, retryDelay))
+		// An unavailable source during a manual run must not rearrange the
+		// scheduled recurrence; it may simply be retried manually later.
+		if pending == 0 || nextUnix <= completed.Unix() {
+			nextRun = completed.Add(min(t.Interval, retryDelay))
+		}
 	}
 	finishTx, err := s.db.BeginTx(context.Background(), nil)
 	if err != nil {

@@ -46,15 +46,18 @@ func (s *Service) UpdateJob(ctx context.Context, id string, in CreateBackupJob) 
 		return empty, err
 	}
 	defer tx.Rollback()
-	var enabled int
+	var enabled, manualPending int
 	var active, oldProfile sql.NullString
 	var oldNext int64
-	err = tx.QueryRowContext(ctx, "SELECT enabled,active_run_id,profile_id,next_run_unix FROM schedule_entries WHERE id=?", id).Scan(&enabled, &active, &oldProfile, &oldNext)
+	err = tx.QueryRowContext(ctx, "SELECT enabled,active_run_id,profile_id,next_run_unix,manual_pending FROM schedule_entries WHERE id=?", id).Scan(&enabled, &active, &oldProfile, &oldNext, &manualPending)
 	if err != nil {
 		return empty, err
 	}
 	if active.Valid {
 		return empty, errors.New("cannot edit a running backup job")
+	}
+	if manualPending != 0 {
+		return empty, errors.New("cannot edit a queued backup job")
 	}
 	if enabled != 0 && oldNext <= now.Unix() {
 		return empty, errors.New("cannot edit an already queued job; let it finish first")

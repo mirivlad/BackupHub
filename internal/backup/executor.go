@@ -74,6 +74,10 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if err != nil {
 		return err
 	}
+	// Full data verification is a separate, potentially lengthy phase.
+	if err = report(domain.JobVerifying); err != nil {
+		return err
+	}
 	if err = destination.check(ctx, true); err != nil {
 		return fmt.Errorf("restic full data verification failed: %w", err)
 	}
@@ -111,7 +115,7 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	return report(domain.JobVerifying)
+	return nil
 }
 func (s *Service) capture(ctx context.Context, sourceID, kind string, settings Settings, password, staging string) (string, func(), error) {
 	if kind == "local" {

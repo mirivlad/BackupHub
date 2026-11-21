@@ -83,12 +83,12 @@ jobs:
           if file dist/backuphub | grep -q 'dynamically linked'; then echo 'DEB binary must not depend on the CI runner glibc'; exit 1; fi
       - name: Create and inspect .deb
         run: |
-          sh packaging/debian/build.sh 0.2.2
-          dpkg-deb -c dist/backuphub_0.2.2_amd64.deb | grep '/usr/share/backuphub/web/index.html'
-          dpkg-deb -c dist/backuphub_0.2.2_amd64.deb | grep '/lib/systemd/system/backuphub.service'
+          sh packaging/debian/build.sh 0.2.3
+          dpkg-deb -c dist/backuphub_0.2.3_amd64.deb | grep '/usr/share/backuphub/web/index.html'
+          dpkg-deb -c dist/backuphub_0.2.3_amd64.deb | grep '/lib/systemd/system/backuphub.service'
       - name: Install Debian package and test HTTPS service
         run: |
-          sudo apt-get install -y ./dist/backuphub_0.2.2_amd64.deb
+          sudo apt-get install -y ./dist/backuphub_0.2.3_amd64.deb
           # postinst starts the daemon and initializes Restic; do not interrupt it.
           ready=false
           for i in $(seq 1 30); do
@@ -145,7 +145,11 @@ jobs:
           response="$(curl -fksS -X PUT -b "$cookies" "${headers[@]}" -d "$updated_json" "$api/backup/jobs/$job_id")"
           printf '%s' "$response" | python3 -c 'import json,sys;v=json.load(sys.stdin);assert v["schedule"]["mode"]=="cron"'
           test "$(curl -ksS -o /dev/null -w '%{http_code}' -b "$cookies" "$api/backup/schedules")" = "404"
+          # Manual execution must not rewrite the next planned cron start.
+          next_before="$(curl -fksS -b "$cookies" "$api/backup/jobs" | python3 -c 'import json,sys;print(next(j["next_run"] for j in json.load(sys.stdin)["jobs"] if j["name"]=="CI cron job"))')"
           curl -fksS -b "$cookies" "${headers[@]}" -X POST "$api/backup/jobs/$job_id/run" > /dev/null
+          next_after="$(curl -fksS -b "$cookies" "$api/backup/jobs" | python3 -c 'import json,sys;print(next(j["next_run"] for j in json.load(sys.stdin)["jobs"] if j["name"]=="CI cron job"))')"
+          test "$next_before" = "$next_after"
           snapshot=""
           for i in $(seq 1 60); do
             response="$(curl -fksS -b "$cookies" "$api/backup/snapshots?source_id=$source_id")"
@@ -273,15 +277,15 @@ jobs:
       - name: Verify SHA256 of built Debian artifact
         run: |
           cd release
-          sha256sum -c backuphub_0.2.2_amd64.deb.sha256
+          sha256sum -c backuphub_0.2.3_amd64.deb.sha256
       - name: Publish immutable release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.2.2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v0.2.2 already published; refusing to overwrite release artifacts"
+          if gh release view v0.2.3 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.2.3 already published; refusing to overwrite release artifacts"
             exit 0
           fi
-          gh release create v0.2.2 release/backuphub_0.2.2_amd64.deb release/backuphub_0.2.2_amd64.deb.sha256 \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.2.2" \
-            --notes-file docs/releases/v0.2.2.md
+          gh release create v0.2.3 release/backuphub_0.2.3_amd64.deb release/backuphub_0.2.3_amd64.deb.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.2.3" \
+            --notes-file docs/releases/v0.2.3.md
