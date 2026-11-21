@@ -4,10 +4,18 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"testing"
 )
 
+func requireIntegrationRestic(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("restic"); err != nil {
+		t.Skip("restic unavailable: integration tests run in Restic CI")
+	}
+}
 func TestEditSourcePreservesIDAndCredentials(t *testing.T) {
+	requireIntegrationRestic(t)
 	svc := serviceFixture(t)
 	ctx := context.Background()
 	first, err := svc.Create(ctx, CreateSource{Name: "Shared", Kind: "smb", Host: "files.local", Share: "Shared", Username: "admin", Password: "original-secret"})
@@ -58,6 +66,7 @@ func TestEditSourcePreservesIDAndCredentials(t *testing.T) {
 	}
 }
 func TestEditJobPreservesRunHistoryAndOwnSchedule(t *testing.T) {
+	requireIntegrationRestic(t)
 	svc := serviceFixture(t)
 	ctx := context.Background()
 	dirA := privateDir(t)
@@ -101,6 +110,7 @@ func TestEditJobPreservesRunHistoryAndOwnSchedule(t *testing.T) {
 	}
 }
 func TestEditSourceAccessStatus(t *testing.T) {
+	requireIntegrationRestic(t)
 	svc := serviceFixture(t)
 	dir := privateDir(t)
 	src, err := svc.Create(context.Background(), CreateSource{Name: "test folder", Kind: "local", Path: dir})

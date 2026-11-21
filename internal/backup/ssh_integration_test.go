@@ -12,6 +12,7 @@ import (
 )
 
 func TestRealSSHHandshakeWithEncryptedPrivateKeyAndTOFU(t *testing.T) {
+	requireIntegrationRestic(t)
 	svc := serviceFixture(t)
 	ctx := context.Background()
 	_, hostPrivate, err := ed25519.GenerateKey(rand.Reader)

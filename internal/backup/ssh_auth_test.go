@@ -61,6 +61,7 @@ func TestSSHPrivateKeysWithAndWithoutPassphrase(t *testing.T) {
 	}
 }
 func TestTOFUPinningAndChangedHostKeyRejected(t *testing.T) {
+	requireIntegrationRestic(t)
 	svc := serviceFixture(t)
 	ctx := context.Background()
 	priv, signer := makeSSHKey(t, "")
@@ -104,6 +105,7 @@ func TestTOFUPinningAndChangedHostKeyRejected(t *testing.T) {
 	}
 }
 func TestSSHKeyNeverReturnedInSourceListing(t *testing.T) {
+	requireIntegrationRestic(t)
 	svc := serviceFixture(t)
 	ctx := context.Background()
 	priv, _ := makeSSHKey(t, "hidden phrase")
@@ -120,6 +122,7 @@ func TestSSHKeyNeverReturnedInSourceListing(t *testing.T) {
 	}
 }
 func TestLegacySSHPasswordPreservedAcrossEditing(t *testing.T) {
+	requireIntegrationRestic(t)
 	svc := serviceFixture(t)
 	ctx := context.Background()
 	// A v0.2.1 source has an empty auth_method in its stored JSON.
