@@ -17,8 +17,6 @@ import (
 	"github.com/hirochachacha/go-smb2/v2"
 	smbauth "github.com/hirochachacha/go-smb2/v2/auth"
 	"github.com/pkg/sftp"
-	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 func safeLocal(root, relative string) (string, error) {
@@ -180,29 +178,11 @@ func captureSMB(ctx context.Context, c Settings, password, target string) error 
 	return nil
 }
 
-func captureSFTP(ctx context.Context, c Settings, password, target string) error {
-	address := c.Host
-	if _, _, err := net.SplitHostPort(address); err != nil {
-		address = net.JoinHostPort(address, "22")
-	}
-	hostKeys, err := knownhosts.New("/etc/backuphub/known_hosts")
+func (s *Service) captureSFTP(ctx context.Context, sourceID string, c Settings, password, target string) error {
+	client, err := s.connectSSH(ctx, sourceID, c, password)
 	if err != nil {
-		return fmt.Errorf("SSH known_hosts is required and must be correctly populated: %w", err)
+		return err
 	}
-	config := &ssh.ClientConfig{
-		User: c.Username, Auth: []ssh.AuthMethod{ssh.Password(password)}, HostKeyCallback: hostKeys,
-		Timeout: 15 * time.Second,
-	}
-	socket, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", address)
-	if err != nil {
-		return fmt.Errorf("SSH connection failed: %w", err)
-	}
-	sshConn, chans, requests, err := ssh.NewClientConn(socket, address, config)
-	if err != nil {
-		_ = socket.Close()
-		return fmt.Errorf("SSH authentication or host key failed: %w", err)
-	}
-	client := ssh.NewClient(sshConn, chans, requests)
 	defer client.Close()
 	remote, err := sftp.NewClient(client)
 	if err != nil {

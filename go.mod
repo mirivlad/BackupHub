@@ -5,6 +5,7 @@ go 1.27.0
 require (
 	github.com/hirochachacha/go-smb2/v2 v2.0.0-20261011164520-7f69f6587832
 	github.com/pkg/sftp v1.13.12
+	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0

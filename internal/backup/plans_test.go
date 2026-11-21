@@ -51,29 +51,6 @@ func TestJobWithOwnedSchedule(t *testing.T) {
 		t.Fatalf("pause failed: %v", jobs)
 	}
 }
-func TestSaveAndRunQueuesImmediately(t *testing.T) {
-	if _, err := exec.LookPath("restic"); err != nil {
-		t.Skip("restic missing")
-	}
-	svc := serviceFixture(t)
-	ctx := context.Background()
-	src, err := svc.Create(ctx, CreateSource{Name: "Immediately", Kind: "local", Path: privateDir(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	job, err := svc.CreateJob(ctx, CreateBackupJob{Name: "Launch", SourceID: src.ID, RepositoryID: "primary",
-		Schedule: ScheduleProfile{Mode: "daily", FirstRun: "2099-01-01T02:00", Timezone: "UTC"}, RunNow: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !job.Queued {
-		t.Fatal("run_now did not queue job")
-	}
-	next, err := time.Parse(time.RFC3339, job.NextRun)
-	if err != nil || next.After(time.Now().Add(time.Minute)) {
-		t.Fatalf("manual start was not immediate: %s", job.NextRun)
-	}
-}
 func TestScheduleValidation(t *testing.T) {
 	cases := []ScheduleProfile{
 		{Mode: "weekly", DaysOfWeek: "", FirstRun: "2026-11-22T02:00", Timezone: "UTC"},

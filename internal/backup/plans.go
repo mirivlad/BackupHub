@@ -16,14 +16,15 @@ import (
 // ScheduleProfile belongs to one backup job. It is never created separately.
 // FirstRun is a wall-clock date/time in Timezone: YYYY-MM-DDTHH:mm.
 type ScheduleProfile struct {
-	Mode          string `json:"mode"`
-	IntervalValue int    `json:"interval_value"`
-	IntervalUnit  string `json:"interval_unit"`
-	DaysOfWeek    string `json:"days_of_week"`
-	Timezone      string `json:"timezone"`
-	FirstRun      string `json:"first_run"`
-	Hour          int    `json:"hour"`
-	Minute        int    `json:"minute"`
+	Mode           string `json:"mode"`
+	IntervalValue  int    `json:"interval_value"`
+	IntervalUnit   string `json:"interval_unit"`
+	DaysOfWeek     string `json:"days_of_week"`
+	Timezone       string `json:"timezone"`
+	FirstRun       string `json:"first_run"`
+	CronExpression string `json:"cron_expression,omitempty"`
+	Hour           int    `json:"hour"`
+	Minute         int    `json:"minute"`
 }
 type BackupJob struct {
 	ID           string          `json:"id"`
@@ -34,14 +35,12 @@ type BackupJob struct {
 	Schedule     ScheduleProfile `json:"schedule"`
 	Enabled      bool            `json:"enabled"`
 	NextRun      string          `json:"next_run"`
-	Queued       bool            `json:"queued,omitempty"`
 }
 type CreateBackupJob struct {
 	Name         string          `json:"name"`
 	SourceID     string          `json:"source_id"`
 	RepositoryID string          `json:"repository_id"`
 	Schedule     ScheduleProfile `json:"schedule"`
-	RunNow       bool            `json:"run_now"`
 }
 
 func validateSchedule(p ScheduleProfile) (ScheduleProfile, time.Time, int, error) {
@@ -81,6 +80,13 @@ func validateSchedule(p ScheduleProfile) (ScheduleProfile, time.Time, int, error
 			return p, time.Time{}, 0, errors.New("invalid interval (5 minutes to 365 days)")
 		}
 		p.DaysOfWeek = ""
+	case "cron":
+		if _, e := scheduler.NextCron(p.CronExpression, p.Timezone, anchor, anchor.Add(-time.Nanosecond)); e != nil {
+			return p, time.Time{}, 0, e
+		}
+		p.IntervalUnit = ""
+		p.IntervalValue = 0
+		p.DaysOfWeek = ""
 	case "daily":
 		p.IntervalUnit = ""
 		p.IntervalValue = 0
@@ -105,9 +111,43 @@ func validateSchedule(p ScheduleProfile) (ScheduleProfile, time.Time, int, error
 	return p, anchor, intervalMinutes, nil
 }
 func nextSchedule(p ScheduleProfile, anchor, after time.Time) (time.Time, error) {
+	if p.Mode == "cron" {
+		return scheduler.NextCron(p.CronExpression, p.Timezone, anchor, after)
+	}
 	return scheduler.NextAnchoredOccurrence(p.Mode, p.IntervalValue, p.IntervalUnit, p.DaysOfWeek, p.Hour, p.Minute, p.Timezone, anchor, after)
 }
+func PreviewSchedule(p ScheduleProfile, count int) ([]time.Time, error) {
+	normalized, anchor, _, err := validateSchedule(p)
+	if err != nil {
+		return nil, err
+	}
+	if count < 1 || count > 20 {
+		return nil, errors.New("invalid preview count")
+	}
+	after := time.Now().UTC()
+	out := make([]time.Time, 0, count)
+	for i := 0; i < count; i++ {
+		next, e := nextSchedule(normalized, anchor, after)
+		if e != nil {
+			return nil, e
+		}
+		out = append(out, next)
+		after = next
+	}
+	return out, nil
+}
+
+// Keep v7 CHECK constraints intact; a nonempty cron_expression distinguishes cron mode.
+func dbScheduleMode(p ScheduleProfile) string {
+	if p.Mode == "cron" {
+		return "interval"
+	}
+	return p.Mode
+}
 func profileInterval(p ScheduleProfile, minutes int) int {
+	if p.Mode == "cron" {
+		return 300
+	}
 	if p.Mode == "daily" {
 		return 24 * 3600
 	}
@@ -146,9 +186,6 @@ func (s *Service) CreateJob(ctx context.Context, in CreateBackupJob) (BackupJob,
 		return empty, err
 	}
 	nextUnix := next.Unix()
-	if in.RunNow {
-		nextUnix = now.Unix()
-	}
 	tx, err := s.catalog.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return empty, err
@@ -156,8 +193,8 @@ func (s *Service) CreateJob(ctx context.Context, in CreateBackupJob) (BackupJob,
 	defer tx.Rollback()
 	created := now.Format(time.RFC3339Nano)
 	// One profile per job, generated within the same transaction.
-	_, err = tx.ExecContext(ctx, `INSERT INTO schedule_profiles(id,name,mode,interval_minutes,days_of_week,hour,minute,timezone,created_at,start_at_unix,interval_unit,interval_value)
- VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, id, "job-"+id, p.Mode, minutes, p.DaysOfWeek, p.Hour, p.Minute, p.Timezone, created, anchor.Unix(), p.IntervalUnit, p.IntervalValue)
+	_, err = tx.ExecContext(ctx, `INSERT INTO schedule_profiles(id,name,mode,interval_minutes,days_of_week,hour,minute,timezone,created_at,start_at_unix,interval_unit,interval_value,cron_expression)
+ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, "job-"+id, dbScheduleMode(p), minutes, p.DaysOfWeek, p.Hour, p.Minute, p.Timezone, created, anchor.Unix(), p.IntervalUnit, p.IntervalValue, p.CronExpression)
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `INSERT INTO jobs(id,dataset_id,schedule_json,created_at) VALUES(?,?,?,?)`, id, in.SourceID, "{}", created)
 	}
@@ -175,15 +212,15 @@ func (s *Service) CreateJob(ctx context.Context, in CreateBackupJob) (BackupJob,
 		return empty, fmt.Errorf("create job: %w", err)
 	}
 	s.notify()
-	return BackupJob{ID: id, Name: name, SourceID: in.SourceID, SourceName: sourceName, RepositoryID: in.RepositoryID, Schedule: p, Enabled: true, NextRun: time.Unix(nextUnix, 0).UTC().Format(time.RFC3339), Queued: in.RunNow}, nil
+	return BackupJob{ID: id, Name: name, SourceID: in.SourceID, SourceName: sourceName, RepositoryID: in.RepositoryID, Schedule: p, Enabled: true, NextRun: time.Unix(nextUnix, 0).UTC().Format(time.RFC3339)}, nil
 }
 func (s *Service) ListJobs(ctx context.Context) ([]BackupJob, error) {
 	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT e.id,COALESCE(NULLIF(e.display_name,''),src.display_name),
  src.id,src.display_name,COALESCE(sr.repository_id,'primary'),e.enabled,e.next_run_unix,
- COALESCE(p.mode,'interval'),COALESCE(p.interval_minutes,e.interval_seconds/60),
+ CASE WHEN COALESCE(p.cron_expression,'')<>'' THEN 'cron' ELSE COALESCE(p.mode,'interval') END,COALESCE(p.interval_minutes,e.interval_seconds/60),
  COALESCE(p.days_of_week,''),COALESCE(p.hour,0),COALESCE(p.minute,0),
  COALESCE(p.timezone,'UTC'),COALESCE(p.start_at_unix,0),
- COALESCE(p.interval_unit,'minutes'),COALESCE(p.interval_value,e.interval_seconds/60)
+ COALESCE(p.interval_unit,'minutes'),COALESCE(p.interval_value,e.interval_seconds/60),COALESCE(p.cron_expression,'')
  FROM schedule_entries e JOIN sources src ON src.id=e.dataset_id
  LEFT JOIN schedule_profiles p ON p.id=e.profile_id
  LEFT JOIN schedule_repositories sr ON sr.schedule_id=e.id
@@ -199,7 +236,7 @@ func (s *Service) ListJobs(ctx context.Context) ([]BackupJob, error) {
 		var next, anchor int64
 		var p ScheduleProfile
 		if err = rows.Scan(&j.ID, &j.Name, &j.SourceID, &j.SourceName, &j.RepositoryID, &enabled, &next,
-			&p.Mode, &minutes, &p.DaysOfWeek, &p.Hour, &p.Minute, &p.Timezone, &anchor, &p.IntervalUnit, &p.IntervalValue); err != nil {
+			&p.Mode, &minutes, &p.DaysOfWeek, &p.Hour, &p.Minute, &p.Timezone, &anchor, &p.IntervalUnit, &p.IntervalValue, &p.CronExpression); err != nil {
 			return nil, err
 		}
 		if anchor > 0 {

@@ -23,6 +23,9 @@ func (s *Service) Create(ctx context.Context, input CreateSource) (Source, error
 	default:
 		return empty, errors.New("unsupported source type")
 	}
+	if input.Kind == "sftp" && input.AuthMethod == "" {
+		input.AuthMethod = "password"
+	}
 	if err := validateInput(input, s.repo.path, s.catalog.DataDir, s.stageDir); err != nil {
 		return empty, err
 	}
@@ -55,15 +58,19 @@ func (s *Service) Create(ctx context.Context, input CreateSource) (Source, error
 	if err != nil {
 		return empty, err
 	}
-	settings := Settings{Host: input.Host, Share: input.Share, Path: input.Path, Username: input.Username, Database: input.Database}
+	settings := Settings{Host: input.Host, Share: input.Share, Path: input.Path, Username: input.Username, Database: input.Database, AuthMethod: input.AuthMethod}
 	encoded, err := json.Marshal(settings)
 	if err != nil {
 		return empty, err
 	}
 	ref := ""
-	if input.Password != "" {
+	secret, secretErr := sshStoredSecret(input)
+	if secretErr != nil {
+		return empty, secretErr
+	}
+	if secret != "" {
 		ref = "source/" + id
-		if err = s.vault.Put(ctx, ref, []byte(input.Password)); err != nil {
+		if err = s.vault.Put(ctx, ref, []byte(secret)); err != nil {
 			return empty, err
 		}
 	}
@@ -90,7 +97,7 @@ func (s *Service) Create(ctx context.Context, input CreateSource) (Source, error
 		}
 		return empty, err
 	}
-	return Source{ID: id, Name: input.Name, Kind: input.Kind, Host: input.Host, Share: input.Share, Path: input.Path, Username: input.Username, Database: input.Database}, nil
+	return Source{ID: id, Name: input.Name, Kind: input.Kind, Host: input.Host, Share: input.Share, Path: input.Path, Username: input.Username, Database: input.Database, AuthMethod: input.AuthMethod}, nil
 }
 func nullable(s string) any {
 	if s == "" {

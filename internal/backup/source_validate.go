@@ -8,7 +8,7 @@ import (
 )
 
 func validateInput(in CreateSource, repo, state, stage string) error {
-	if len(in.Password) > 4096 || len(in.Host) > 255 || len(in.Username) > 256 || len(in.Path) > 4096 || len(in.Share) > 255 || len(in.Database) > 256 {
+	if len(in.Password) > 4096 || len(in.PrivateKey) > 65536 || len(in.KeyPassphrase) > 4096 || len(in.Host) > 255 || len(in.Username) > 256 || len(in.Path) > 4096 || len(in.Share) > 255 || len(in.Database) > 256 {
 		return errors.New("source setting too long")
 	}
 	switch in.Kind {
@@ -40,8 +40,19 @@ func validateInput(in CreateSource, repo, state, stage string) error {
 		if strings.ContainsAny(in.Host, "/@\\\x00") {
 			return errors.New("invalid SFTP host")
 		}
-		if in.Password == "" {
-			return errors.New("SFTP password required in current profile")
+		if in.AuthMethod == "key" {
+			if in.PrivateKey == "" {
+				return errors.New("SFTP private key is required")
+			}
+			if _, err := parseSSHKey(in.PrivateKey, in.KeyPassphrase); err != nil {
+				return err
+			}
+		} else if in.AuthMethod == "" || in.AuthMethod == "password" {
+			if in.Password == "" {
+				return errors.New("SFTP password is required")
+			}
+		} else {
+			return errors.New("unsupported SSH authentication method")
 		}
 	case "postgres":
 		if in.Host == "" || in.Username == "" || in.Database == "" || in.Password == "" {

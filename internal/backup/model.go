@@ -16,25 +16,32 @@ import (
 )
 
 type CreateSource struct {
-	Name     string `json:"name"`
-	Kind     string `json:"kind"`
-	Host     string `json:"host"`
-	Share    string `json:"share"`
-	Path     string `json:"path"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Database string `json:"database"`
+	Name          string `json:"name"`
+	Kind          string `json:"kind"`
+	Host          string `json:"host"`
+	Share         string `json:"share"`
+	Path          string `json:"path"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
+	AuthMethod    string `json:"auth_method,omitempty"`
+	PrivateKey    string `json:"private_key,omitempty"`
+	KeyPassphrase string `json:"key_passphrase,omitempty"`
+	Database      string `json:"database"`
 }
-type Settings struct{ Host, Share, Path, Username, Database string }
+type Settings struct{ Host, Share, Path, Username, Database, AuthMethod string }
 type Source struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Kind     string `json:"kind"`
-	Host     string `json:"host"`
-	Share    string `json:"share"`
-	Path     string `json:"path"`
-	Username string `json:"username"`
-	Database string `json:"database"`
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Kind               string `json:"kind"`
+	Host               string `json:"host"`
+	Share              string `json:"share"`
+	Path               string `json:"path"`
+	Username           string `json:"username"`
+	Database           string `json:"database"`
+	AccessStatus       string `json:"access_status,omitempty"`
+	AccessHint         string `json:"access_hint,omitempty"`
+	AuthMethod         string `json:"auth_method,omitempty"`
+	HostKeyFingerprint string `json:"host_key_fingerprint,omitempty"`
 }
 type Snapshot struct {
 	RepositoryID string `json:"repository_id"`
@@ -131,6 +138,12 @@ func (s *Service) Start(ctx context.Context) error {
 	return startErr
 }
 func safeFailure(err error) string {
+	if errors.Is(err, scheduler.ErrSSHHostKeyChanged) {
+		return "ssh_host_key_changed"
+	}
+	if errors.Is(err, scheduler.ErrSourcePermissionDenied) {
+		return "source_permission_denied"
+	}
 	if errors.Is(err, scheduler.ErrSourceUnavailable) {
 		return "source_unavailable"
 	}

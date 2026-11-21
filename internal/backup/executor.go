@@ -16,18 +16,27 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if err != nil {
 		return err
 	}
-	if t.Kind != "backup" {return errors.New("unsupported executor kind")}
- repoID,err:=s.taskRepository(ctx,t.ID)
- if err!=nil{return fmt.Errorf("missing destination storage: %w",err)}
- destination,err:=s.repositoryFor(ctx,repoID)
- if err!=nil{return fmt.Errorf("%w: storage offline",scheduler.ErrSourceUnavailable)}
+	if t.Kind != "backup" {
+		return errors.New("unsupported executor kind")
+	}
+	repoID, err := s.taskRepository(ctx, t.ID)
+	if err != nil {
+		return fmt.Errorf("missing destination storage: %w", err)
+	}
+	destination, err := s.repositoryFor(ctx, repoID)
+	if err != nil {
+		return fmt.Errorf("%w: storage offline", scheduler.ErrSourceUnavailable)
+	}
 	if source.Kind == "local" {
-		info, err := os.Lstat(settings.Path)
-		if err != nil {
-			return fmt.Errorf("%w: local path missing", scheduler.ErrSourceUnavailable)
-		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("local source must be a real directory")
+		status, _ := assessLocalAccess(settings.Path)
+		switch status {
+		case "ok":
+		case "missing":
+			return fmt.Errorf("%w: local directory not found or hidden: %s", scheduler.ErrSourceUnavailable, settings.Path)
+		case "denied":
+			return fmt.Errorf("%w: backuphub cannot read local directory: %s", scheduler.ErrSourcePermissionDenied, settings.Path)
+		default:
+			return errors.New("local source is not a readable directory")
 		}
 	}
 	if err = report(domain.JobPreparing); err != nil {
@@ -47,12 +56,12 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if err = report(domain.JobCapturing); err != nil {
 		return err
 	}
-	staging:=s.stageDir
- if repoID!=PrimaryStorageID{
-  // Stage remote trees on the SELECTED backup volume, not on the OS disk.
-  staging=filepath.Join(filepath.Dir(destination.path),"staging")
- }
- root, cleanup, err := s.capture(ctx, source.Kind, settings, password, staging)
+	staging := s.stageDir
+	if repoID != PrimaryStorageID {
+		// Stage remote trees on the SELECTED backup volume, not on the OS disk.
+		staging = filepath.Join(filepath.Dir(destination.path), "staging")
+	}
+	root, cleanup, err := s.capture(ctx, source.ID, source.Kind, settings, password, staging)
 	password = ""
 	if err != nil {
 		return err
@@ -104,15 +113,21 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	}
 	return report(domain.JobVerifying)
 }
-func (s *Service) capture(ctx context.Context, kind string, settings Settings, password,staging string) (string, func(), error) {
+func (s *Service) capture(ctx context.Context, sourceID, kind string, settings Settings, password, staging string) (string, func(), error) {
 	if kind == "local" {
 		return filepath.Clean(settings.Path), func() {}, nil
 	}
-	if err:=os.MkdirAll(staging,0700);err!=nil{return "",func(){},err}
- info,err:=os.Lstat(staging)
- if err!=nil{return "",func(){},err}
- if !info.IsDir()||info.Mode()&os.ModeSymlink!=0||info.Mode().Perm()&0077!=0{return "",func(){},errors.New("staging directory must be private and real")}
- dir, err := os.MkdirTemp(staging, "capture-")
+	if err := os.MkdirAll(staging, 0700); err != nil {
+		return "", func() {}, err
+	}
+	info, err := os.Lstat(staging)
+	if err != nil {
+		return "", func() {}, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
+		return "", func() {}, errors.New("staging directory must be private and real")
+	}
+	dir, err := os.MkdirTemp(staging, "capture-")
 	if err != nil {
 		return "", func() {}, err
 	}
@@ -126,7 +141,7 @@ func (s *Service) capture(ctx context.Context, kind string, settings Settings, p
 	case "smb":
 		err = captureSMB(ctx, settings, password, root)
 	case "sftp":
-		err = captureSFTP(ctx, settings, password, root)
+		err = s.captureSFTP(ctx, sourceID, settings, password, root)
 	case "postgres":
 		err = capturePostgres(ctx, settings, password, root)
 	default:

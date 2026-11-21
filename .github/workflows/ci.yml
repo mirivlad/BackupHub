@@ -83,12 +83,12 @@ jobs:
           if file dist/backuphub | grep -q 'dynamically linked'; then echo 'DEB binary must not depend on the CI runner glibc'; exit 1; fi
       - name: Create and inspect .deb
         run: |
-          sh packaging/debian/build.sh 0.2.1
-          dpkg-deb -c dist/backuphub_0.2.1_amd64.deb | grep '/usr/share/backuphub/web/index.html'
-          dpkg-deb -c dist/backuphub_0.2.1_amd64.deb | grep '/lib/systemd/system/backuphub.service'
+          sh packaging/debian/build.sh 0.2.2
+          dpkg-deb -c dist/backuphub_0.2.2_amd64.deb | grep '/usr/share/backuphub/web/index.html'
+          dpkg-deb -c dist/backuphub_0.2.2_amd64.deb | grep '/lib/systemd/system/backuphub.service'
       - name: Install Debian package and test HTTPS service
         run: |
-          sudo apt-get install -y ./dist/backuphub_0.2.1_amd64.deb
+          sudo apt-get install -y ./dist/backuphub_0.2.2_amd64.deb
           # postinst starts the daemon and initializes Restic; do not interrupt it.
           ready=false
           for i in $(seq 1 30); do
@@ -127,13 +127,25 @@ jobs:
           test -n "$source_id"
           # Adding a source must not add an implicit job.
           curl -fksS -b "$cookies" "$api/backup/jobs" | python3 -c 'import json,sys;assert json.load(sys.stdin)["jobs"] == []'
-          # The job owns its schedule, and save-and-run queues immediately.
-          job_json="$(python3 -c 'import json,sys;print(json.dumps(dict(name="CI every 7 days",source_id=sys.argv[1],repository_id="primary",run_now=True,schedule=dict(mode="interval",interval_unit="days",interval_value=7,timezone="UTC",first_run="2099-01-01T02:00"))))' "$source_id")"
+          # Edit source: user and password are not lost on an ordinary update.
+          source_json='{"name":"CI renamed dataset","kind":"local","path":"/opt/backuphub-smoke"}'
+          response="$(curl -fksS -X PUT -b "$cookies" "${headers[@]}" -d "$source_json" "$api/backup/sources/$source_id")"
+          printf '%s' "$response" | python3 -c 'import json,sys;v=json.load(sys.stdin);assert v["name"]=="CI renamed dataset";assert v["access_status"]=="ok"'
+          # Preview five upcoming cron runs (without creating an extra schedule).
+          cron_json='{"mode":"cron","cron_expression":"15 8 * * 1-5","timezone":"UTC","first_run":"2099-01-01T00:00"}'
+          response="$(curl -fksS -b "$cookies" "${headers[@]}" -d "$cron_json" "$api/backup/jobs/preview")"
+          printf '%s' "$response" | python3 -c 'import json,sys;assert len(json.load(sys.stdin)["next_runs"])==5'
+          # Creating the job must NOT trigger a backup automatically.
+          job_json="$(python3 -c 'import json,sys;print(json.dumps(dict(name="CI every 7 days",source_id=sys.argv[1],repository_id="primary",schedule=dict(mode="interval",interval_unit="days",interval_value=7,timezone="UTC",first_run="2099-01-01T02:00"))))' "$source_id")"
           response="$(curl -fksS -b "$cookies" "${headers[@]}" -d "$job_json" "$api/backup/jobs")"
-          job_id="$(printf '%s' "$response" | python3 -c 'import json,sys;v=json.load(sys.stdin);assert v["queued"] is True;assert v["schedule"]["interval_value"]==7;print(v["id"])')"
+          job_id="$(printf '%s' "$response" | python3 -c 'import json,sys;v=json.load(sys.stdin);assert v["schedule"]["interval_value"]==7;print(v["id"])')"
           test -n "$job_id"
-          curl -fksS -b "$cookies" "$api/backup/jobs" | python3 -c 'import json,sys;a=json.load(sys.stdin)["jobs"];assert len(a)==1;assert a[0]["schedule"]["first_run"]=="2099-01-01T02:00"'
+          # Edit the same job in-place; retain its ID and snapshot associations.
+          updated_json="$(python3 -c 'import json,sys;print(json.dumps(dict(name="CI cron job",source_id=sys.argv[1],repository_id="primary",schedule=dict(mode="cron",cron_expression="0 2 * * 1-5",timezone="UTC",first_run="2099-01-01T00:00"))))' "$source_id")"
+          response="$(curl -fksS -X PUT -b "$cookies" "${headers[@]}" -d "$updated_json" "$api/backup/jobs/$job_id")"
+          printf '%s' "$response" | python3 -c 'import json,sys;v=json.load(sys.stdin);assert v["schedule"]["mode"]=="cron"'
           test "$(curl -ksS -o /dev/null -w '%{http_code}' -b "$cookies" "$api/backup/schedules")" = "404"
+          curl -fksS -b "$cookies" "${headers[@]}" -X POST "$api/backup/jobs/$job_id/run" > /dev/null
           snapshot=""
           for i in $(seq 1 60); do
             response="$(curl -fksS -b "$cookies" "$api/backup/snapshots?source_id=$source_id")"
@@ -152,6 +164,27 @@ jobs:
           test -n "$restored"
           sudo grep -x 'backuphub-roundtrip' "$restored/Video/clip.txt"
           test ! -f /opt/backuphub-smoke/Video/clip.txt
+          # A root-owned 0700 directory under /home must be readable by the
+          # backup process without changing ownership/ACL or running it as root.
+          sudo install -d -o root -g root -m 0700 /home/backuphub-ci-private
+          printf '%s\n' 'protected-home-source' | sudo tee /home/backuphub-ci-private/private.txt > /dev/null
+          sudo chmod 0600 /home/backuphub-ci-private/private.txt
+          response="$(curl -fksS -b "$cookies" "${headers[@]}" -d '{"name":"CI root private home","kind":"local","path":"/home/backuphub-ci-private"}' "$api/backup/sources")"
+          private_source="$(printf '%s' "$response" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')"
+          private_job="$(python3 -c 'import json,sys;print(json.dumps(dict(name="CI private home",source_id=sys.argv[1],repository_id="primary",schedule=dict(mode="daily",timezone="UTC",first_run="2099-01-01T02:00"))))' "$private_source")"
+          response="$(curl -fksS -b "$cookies" "${headers[@]}" -d "$private_job" "$api/backup/jobs")"
+          private_job_id="$(printf '%s' "$response" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')"
+          curl -fksS -b "$cookies" "${headers[@]}" -X POST "$api/backup/jobs/$private_job_id/run" > /dev/null
+          private_snap=""
+          for i in $(seq 1 60); do
+            response="$(curl -fksS -b "$cookies" "$api/backup/snapshots?source_id=$private_source")"
+            private_snap="$(printf '%s' "$response" | python3 -c 'import json,sys;a=json.load(sys.stdin)["snapshots"];print(a[0]["id"] if a else "")')"
+            if [ -n "$private_snap" ]; then break; fi
+            sleep 2
+          done
+          if [ -z "$private_snap" ]; then sudo journalctl -u backuphub -n 120 --no-pager; exit 1; fi
+          curl -fksS -b "$cookies" "$api/backup/snapshots/$private_snap/download?mode=single&path=private.txt" -o /tmp/backuphub-private.txt
+          grep -x 'protected-home-source' /tmp/backuphub-private.txt
           # Root helper is socket-activated; normal daemon remains unprivileged.
           sudo systemctl is-active --quiet backuphub-storage.socket
           curl -fksS -b "$cookies" "$api/backup/storages" | python3 -c 'import json,sys;assert any(s["id"]=="primary" for s in json.load(sys.stdin)["storages"])'
@@ -240,15 +273,15 @@ jobs:
       - name: Verify SHA256 of built Debian artifact
         run: |
           cd release
-          sha256sum -c backuphub_0.2.1_amd64.deb.sha256
+          sha256sum -c backuphub_0.2.2_amd64.deb.sha256
       - name: Publish immutable release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.2.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v0.2.1 already published; refusing to overwrite release artifacts"
+          if gh release view v0.2.2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.2.2 already published; refusing to overwrite release artifacts"
             exit 0
           fi
-          gh release create v0.2.1 release/backuphub_0.2.1_amd64.deb release/backuphub_0.2.1_amd64.deb.sha256 \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.2.1" \
-            --notes-file docs/releases/v0.2.1.md
+          gh release create v0.2.2 release/backuphub_0.2.2_amd64.deb release/backuphub_0.2.2_amd64.deb.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.2.2" \
+            --notes-file docs/releases/v0.2.2.md

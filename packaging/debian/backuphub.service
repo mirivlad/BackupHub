@@ -22,7 +22,11 @@ NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=read-only
+# Read-only local backups must be able to traverse mode 0700 directories.
+# The daemon does NOT gain root UID, write access or DAC_OVERRIDE.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_DAC_READ_SEARCH
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

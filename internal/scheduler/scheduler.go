@@ -19,6 +19,8 @@ import (
 
 var idPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 var ErrSourceUnavailable = errors.New("source unavailable")
+var ErrSourcePermissionDenied = errors.New("source permission denied")
+var ErrSSHHostKeyChanged = errors.New("SSH host key changed")
 
 const MaxInterval = 365 * 24 * time.Hour
 const retryDelay = 5 * time.Minute
@@ -204,6 +206,12 @@ func (s *Scheduler) RunDue(ctx context.Context) (bool, error) {
 	if executeErr != nil {
 		finalState = domain.JobFailed
 		code = "executor_error"
+		if errors.Is(executeErr, ErrSourcePermissionDenied) {
+			code = "source_permission_denied"
+		}
+		if errors.Is(executeErr, ErrSSHHostKeyChanged) {
+			code = "ssh_host_key_changed"
+		}
 		if errors.Is(executeErr, ErrSourceUnavailable) && current == domain.JobPreflight {
 			finalState = domain.JobWaiting
 			code = "source_unavailable"

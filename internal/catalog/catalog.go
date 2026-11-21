@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 8
+const SchemaVersion = 10
 
 // Catalog stores operational state; the portable repository manifest must
 // remain sufficient for rebuilding the snapshot index after database loss.
@@ -289,6 +289,44 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if _, err = tx.ExecContext(ctx, `UPDATE schedule_profiles SET interval_value=interval_minutes
           WHERE interval_value=0 AND mode='interval'`); err != nil {
 			return err
+		}
+	}
+	if version < 9 {
+		columns := map[string]bool{}
+		rows, queryErr := tx.QueryContext(ctx, `PRAGMA table_info(schedule_profiles)`)
+		if queryErr != nil {
+			return queryErr
+		}
+		for rows.Next() {
+			var cid, nn, pk int
+			var name, typ string
+			var def sql.NullString
+			if err = rows.Scan(&cid, &name, &typ, &nn, &def, &pk); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			columns[name] = true
+		}
+		if err = rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		_ = rows.Close()
+		if !columns["cron_expression"] {
+			if _, err = tx.ExecContext(ctx, `ALTER TABLE schedule_profiles ADD COLUMN cron_expression TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("v9 cron migration: %w", err)
+			}
+		}
+	}
+	if version < 10 {
+		if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS ssh_trusted_hosts(
+            source_id TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+            server_address TEXT NOT NULL,
+            public_key BLOB NOT NULL,
+            fingerprint TEXT NOT NULL,
+            first_seen TEXT NOT NULL
+        )`); err != nil {
+			return fmt.Errorf("v10 ssh host key migration: %w", err)
 		}
 	}
 	if _, err = tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", SchemaVersion)); err != nil {

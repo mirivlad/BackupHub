@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Service) ListSources(ctx context.Context) ([]Source, error) {
-	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT id,display_name,kind,settings_json FROM sources ORDER BY display_name`)
+	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT s.id,s.display_name,s.kind,s.settings_json,COALESCE(t.fingerprint,'') FROM sources s LEFT JOIN ssh_trusted_hosts t ON t.source_id=s.id ORDER BY s.display_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -19,7 +19,7 @@ func (s *Service) ListSources(ctx context.Context) ([]Source, error) {
 	for rows.Next() {
 		var out Source
 		var encoded string
-		if err = rows.Scan(&out.ID, &out.Name, &out.Kind, &encoded); err != nil {
+		if err = rows.Scan(&out.ID, &out.Name, &out.Kind, &encoded, &out.HostKeyFingerprint); err != nil {
 			return nil, err
 		}
 		var settings Settings
@@ -31,6 +31,10 @@ func (s *Service) ListSources(ctx context.Context) ([]Source, error) {
 		out.Share = settings.Share
 		out.Username = settings.Username
 		out.Database = settings.Database
+		out.AuthMethod = settings.AuthMethod
+		if out.Kind == "local" {
+			out.AccessStatus, out.AccessHint = assessLocalAccess(out.Path)
+		}
 		result = append(result, out)
 	}
 	return result, rows.Err()
@@ -53,7 +57,7 @@ func (s *Service) Manual(ctx context.Context, id string) error {
 	if !safeID(id) {
 		return errors.New("invalid job ID")
 	}
-	result, err := s.catalog.DB.ExecContext(ctx, `UPDATE schedule_entries SET next_run_unix=? WHERE id=? AND active_run_id IS NULL`, time.Now().UTC().Unix()-1, id)
+	result, err := s.catalog.DB.ExecContext(ctx, `UPDATE schedule_entries SET next_run_unix=? WHERE id=? AND enabled=1 AND active_run_id IS NULL`, time.Now().UTC().Unix()-1, id)
 	if err != nil {
 		return err
 	}

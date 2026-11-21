@@ -126,7 +126,7 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				var input backup.CreateSource
-				if !decode(w, r, &input) {
+				if !decodeSource(w, r, &input) {
 					return
 				}
 				output, err := s.backup.Create(r.Context(), input)
@@ -163,6 +163,53 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, 200, map[string]any{"snapshots": snapshots})
 			return
 		}
+	}
+	if len(path) == 2 && path[0] == "jobs" && path[1] == "preview" {
+		if !method(w, r, http.MethodPost) {
+			return
+		}
+		var req backup.ScheduleProfile
+		if !decode(w, r, &req) {
+			return
+		}
+		next, err := backup.PreviewSchedule(req, 5)
+		if err != nil {
+			fail(err)
+			return
+		}
+		jsonResponse(w, 200, map[string]any{"next_runs": next})
+		return
+	}
+	if len(path) == 2 && (path[0] == "jobs" || path[0] == "sources") {
+		if !isAdmin || !method(w, r, http.MethodPut) {
+			return
+		}
+		if path[0] == "sources" {
+			var input backup.CreateSource
+			if !decodeSource(w, r, &input) {
+				return
+			}
+			result, err := s.backup.UpdateSource(r.Context(), path[1], input)
+			if err != nil {
+				fail(err)
+				return
+			}
+			s.backup.Audit(r.Context(), user.ID, "source.updated", path[1])
+			jsonResponse(w, 200, result)
+		} else {
+			var input backup.CreateBackupJob
+			if !decode(w, r, &input) {
+				return
+			}
+			result, err := s.backup.UpdateJob(r.Context(), path[1], input)
+			if err != nil {
+				fail(err)
+				return
+			}
+			s.backup.Audit(r.Context(), user.ID, "job.updated", path[1])
+			jsonResponse(w, 200, result)
+		}
+		return
 	}
 	if len(path) == 3 && path[0] == "jobs" {
 		id, action := path[1], path[2]
@@ -311,6 +358,15 @@ func publicError(err error) string {
 	}
 	if errors.Is(err, backup.ErrPasswordlessResticUnsupported) {
 		return "Для хранения без пароля нужен Restic версии 0.17.0 или новее"
+	}
+	msg := err.Error()
+	for _, safe := range []string{"invalid cron rule", "unknown schedule timezone", "invalid schedule timezone", "invalid first run", "first run date and time required", "invalid interval", "invalid scheduling mode", "invalid weekdays", "choose weekdays", "choose minutes", "source not found", "cannot edit", "invalid source name", "unsupported source type", "local source overlaps", "local source must be", "source overlaps", "SMB host", "SFTP host", "SFTP password", "PostgreSQL host", "invalid source or storage", "invalid job name", "destination storage unavailable"} {
+		if strings.HasPrefix(msg, safe) {
+			if strings.HasPrefix(msg, "invalid cron rule") {
+				return "Некорректное правило расписания: проверьте выбор минут, часов и дней"
+			}
+			return msg
+		}
 	}
 	return "operation rejected or failed; consult server journal for details"
 }

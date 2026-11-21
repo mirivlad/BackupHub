@@ -1,6 +1,6 @@
-# BackupHub Debian package (v0.2.1)
+# BackupHub Debian package (v0.2.2)
 
-`sudo apt install ./backuphub_0.2.1_amd64.deb` creates the
+`sudo apt install ./backuphub_0.2.2_amd64.deb` creates the
 dedicated unprivileged system user `backuphub`, initializes state under
 `/var/lib/backuphub`, installs the Go daemon, Svelte UI, an HTTPS service and
 a **separate** root-owned socket-activated `backuphub-storage` helper. Neither
@@ -67,8 +67,21 @@ them renders the corresponding protected backup inaccessible.
 
 SMB2/3 and SFTP captures stage the **entire remote dataset** on the **selected backup volume** (under its private `staging/` folder) before Restic can deduplicate and encrypt it. The legacy `primary` storage stages under `/var/lib/backuphub/staging`.
 Ensure enough temporary space. Do not select BackupHub's own state/repository
-as a source. SFTP host key verification requires a trusted
-`/etc/backuphub/known_hosts`. SMB1 is unsupported. PostgreSQL uses custom
+as a source. SSH/SFTP accepts password or OpenSSH private key authentication
+(with an optional key passphrase), managed entirely from the web interface.
+The first SSH server public key is pinned automatically (TOFU) in SQLite and
+displayed as an SHA-256 fingerprint. A changed server key blocks subsequent
+connections. The first handshake is vulnerable to active MITM; administrators
+should verify the displayed fingerprint using an independent channel.
+Private keys and passphrases are encrypted using BackupHub's master key.
+
+Local backups run under the unprivileged `backuphub` account with the
+`CAP_DAC_READ_SEARCH` *read-only* capability to access root-owned and private
+user folders. `ProtectHome=read-only` and `ProtectSystem=strict` prevent writes.
+This capability can read sensitive local files: keep the admin account secure,
+restrict access to HTTPS, and audit backup destinations.
+
+SMB1 is unsupported. PostgreSQL uses custom
 `pg_dump` with TOC validation only; native split-config for PostgreSQL Pro 1C
 is **not** included.
 
