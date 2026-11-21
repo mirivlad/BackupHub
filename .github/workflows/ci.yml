@@ -83,12 +83,12 @@ jobs:
           if file dist/backuphub | grep -q 'dynamically linked'; then echo 'DEB binary must not depend on the CI runner glibc'; exit 1; fi
       - name: Create and inspect .deb
         run: |
-          sh packaging/debian/build.sh 0.2.4
-          dpkg-deb -c dist/backuphub_0.2.4_amd64.deb | grep '/usr/share/backuphub/web/index.html'
-          dpkg-deb -c dist/backuphub_0.2.4_amd64.deb | grep '/lib/systemd/system/backuphub.service'
+          sh packaging/debian/build.sh 0.2.5
+          dpkg-deb -c dist/backuphub_0.2.5_amd64.deb | grep '/usr/share/backuphub/web/index.html'
+          dpkg-deb -c dist/backuphub_0.2.5_amd64.deb | grep '/lib/systemd/system/backuphub.service'
       - name: Install Debian package and test HTTPS service
         run: |
-          sudo apt-get install -y ./dist/backuphub_0.2.4_amd64.deb
+          sudo apt-get install -y ./dist/backuphub_0.2.5_amd64.deb
           # postinst starts the daemon and initializes Restic; do not interrupt it.
           ready=false
           for i in $(seq 1 30); do
@@ -171,6 +171,12 @@ jobs:
           test "$status" = 400
           curl -fksS -b "$cookies" "$api/backup/snapshots/$snapshot/download?path=Video" -o /tmp/backuphub-smoke.zip
           python3 -c 'import zipfile; z=zipfile.ZipFile("/tmp/backuphub-smoke.zip"); assert z.read("Video/clip.txt").strip()==b"backuphub-roundtrip"'
+          # ZIP of one selected file and of the full snapshot must be valid
+          # and retain paths relative to the backed-up root.
+          curl -fksS -b "$cookies" "$api/backup/snapshots/$snapshot/download?path=Video%2Fclip.txt" -o /tmp/backuphub-selected.zip
+          python3 -c 'import zipfile; z=zipfile.ZipFile("/tmp/backuphub-selected.zip"); assert z.read("Video/clip.txt").strip()==b"backuphub-roundtrip"'
+          curl -fksS -b "$cookies" "$api/backup/snapshots/$snapshot/download" -o /tmp/backuphub-whole.zip
+          python3 -c 'import zipfile; z=zipfile.ZipFile("/tmp/backuphub-whole.zip"); assert z.read("Video/clip.txt").strip()==b"backuphub-roundtrip"'
           curl -fksS -b "$cookies" "$api/backup/snapshots/$snapshot/download?mode=single&path=Video%2Fclip.txt" -o /tmp/backuphub-smoke.txt
           grep -x 'backuphub-roundtrip' /tmp/backuphub-smoke.txt
           sudo rm /opt/backuphub-smoke/Video/clip.txt
@@ -288,15 +294,15 @@ jobs:
       - name: Verify SHA256 of built Debian artifact
         run: |
           cd release
-          sha256sum -c backuphub_0.2.4_amd64.deb.sha256
+          sha256sum -c backuphub_0.2.5_amd64.deb.sha256
       - name: Publish immutable release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.2.4 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v0.2.4 already published; refusing to overwrite release artifacts"
+          if gh release view v0.2.5 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.2.5 already published; refusing to overwrite release artifacts"
             exit 0
           fi
-          gh release create v0.2.4 release/backuphub_0.2.4_amd64.deb release/backuphub_0.2.4_amd64.deb.sha256 \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.2.4" \
-            --notes-file docs/releases/v0.2.4.md
+          gh release create v0.2.5 release/backuphub_0.2.5_amd64.deb release/backuphub_0.2.5_amd64.deb.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.2.5" \
+            --notes-file docs/releases/v0.2.5.md

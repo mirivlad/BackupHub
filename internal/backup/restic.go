@@ -587,6 +587,10 @@ func (r *repository) zipSelection(ctx context.Context, snapshotID, root string, 
 	if len(requested) == 0 {
 		requested["."] = true
 	}
+	handled, err := r.optimizedZipSelection(ctx, snapshotID, root, requested, w)
+	if handled {
+		return err
+	}
 	entries, err := r.listTree(ctx, snapshotID)
 	if err != nil {
 		return err
@@ -643,7 +647,7 @@ func (r *repository) zipSelection(ctx context.Context, snapshotID, root string, 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		h := &zip.FileHeader{Name: f.relative, Method: zip.Deflate}
+		h := &zip.FileHeader{Name: f.relative, Method: zip.Store}
 		h.SetModTime(f.mtime)
 		target, err := zw.CreateHeader(h)
 		if err != nil {
