@@ -1,18 +1,17 @@
 <script lang="ts">
  import {onMount} from 'svelte';
  import StoragePane from './StoragePane.svelte';
- type Section='overview'|'jobs'|'sources'|'storages'|'schedules'|'history'|'runs';
+ type Section='overview'|'jobs'|'sources'|'storages'|'history'|'runs';
  type Source={id:string;name:string;kind:string;host:string;share:string;path:string;username:string;database:string;};
  type Storage={id:string;name:string;path:string;free_bytes:number;status:string;password_mode:string};
- type Profile={id:string;name:string;mode:'interval'|'daily'|'weekly';interval_minutes:number;days_of_week:string;hour:number;minute:number;timezone:string};
- type Job={id:string;name:string;source_id:string;source_name:string;repository_id:string;schedule_id:string;schedule_name:string;enabled:boolean;next_run:string};
+ type Profile={mode:'interval'|'daily'|'weekly';interval_value:number;interval_unit:string;days_of_week:string;hour:number;minute:number;timezone:string;first_run:string};
+ type Job={id:string;name:string;source_id:string;source_name:string;repository_id:string;schedule:Profile;enabled:boolean;next_run:string;queued?:boolean};
  type Snapshot={id:string;source_id:string;source_name:string;kind:string;created_at:string;verification:string;fidelity:string;consistency:string};
  type Run={id:string;task_id:string;state:string;started_at:string;finished_at?:string;failure_code?:string};
  type File={path:string;name:string;type:string;size:number;modified:string};
  let {section,role,onNavigate}:{section:Section;role:string;onNavigate:(section:Section)=>void}=$props();
  let sources=$state<Source[]>([]);
  let storages=$state<Storage[]>([]);
- let schedules=$state<Profile[]>([]);
  let jobs=$state<Job[]>([]);
  let snapshots=$state<Snapshot[]>([]);
  let runs=$state<Run[]>([]);
@@ -26,8 +25,8 @@
  let notice=$state('');
  let editing=$state(false);
  let sourceForm=$state({name:'',kind:'smb',host:'',share:'',path:'',username:'',password:'',database:''});
- let jobForm=$state({name:'',source_id:'',repository_id:'',schedule_id:''});
- let scheduleForm=$state({name:'',mode:'daily' as 'daily'|'weekly'|'interval',time:'02:00',timezone:'UTC',interval:1,unit:'days',weekdays:[1,2,3,4,5] as number[]});
+ let jobForm=$state({name:'',source_id:'',repository_id:''});
+ let scheduleForm=$state({mode:'daily' as 'daily'|'weekly'|'interval',time:'02:00',startDate:'',timezone:'UTC',interval:7,unit:'days',weekdays:[1,2,3,4,5] as number[]});
  const weekdays=[{id:1,label:'Пн'},{id:2,label:'Вт'},{id:3,label:'Ср'},{id:4,label:'Чт'},{id:5,label:'Пт'},{id:6,label:'Сб'},{id:0,label:'Вс'}];
  const canConfigure=$derived(role==='administrator');
  const canRun=$derived(role==='administrator'||role==='backup_operator');
@@ -41,10 +40,13 @@
  function sourceType(kind:string){return ({smb:'SMB',sftp:'SFTP',postgres:'PostgreSQL',local:'Локальный каталог'} as Record<string,string>)[kind]??kind;}
  function sourcePath(s:Source){return s.kind==='smb'?'//'+s.host+'/'+s.share+(s.path?'/'+s.path:''):s.kind==='postgres'?s.host+'/'+s.database:s.kind==='sftp'?s.host+':'+s.path:s.path;}
  function stateLabel(state:string){return ({completed:'Завершено',completed_with_warnings:'С предупреждениями',failed:'Ошибка',queued:'В очереди',preflight:'Проверка',preparing:'Подготовка',capturing:'Копирование',committing:'Сохранение',verifying:'Проверка данных',waiting_for_source:'Ожидание источника',interrupted:'Прервано',cancelled:'Отменено'} as Record<string,string>)[state]??state;}
- function scheduleText(p:Profile){if(p.mode==='interval'){const n=p.interval_minutes;return n%1440===0?'Каждые '+(n/1440)+' дн.':n%60===0?'Каждые '+(n/60)+' ч.':'Каждые '+n+' мин.';}
+ function scheduleText(p:Profile){
+  if(!p)return '—';
   const at=String(p.hour).padStart(2,'0')+':'+String(p.minute).padStart(2,'0');
-  if(p.mode==='daily')return 'Ежедневно в '+at;
-  return p.days_of_week.split(',').map(n=>weekdays.find(x=>x.id===Number(n))?.label??n).join(', ')+' · '+at;
+  if(p.mode==='daily')return 'Каждый день в '+at+' · '+p.timezone;
+  if(p.mode==='weekly')return p.days_of_week.split(',').map(n=>weekdays.find(x=>x.id===Number(n))?.label??n).join(', ')+' в '+at+' · '+p.timezone;
+  const units:Record<string,string>={minutes:'мин.',hours:'ч.',days:'дн.'};
+  return 'Каждые '+p.interval_value+' '+(units[p.interval_unit]??p.interval_unit)+' с '+p.first_run.replace('T',' ')+' · '+p.timezone;
  }
  function csrf(){return decodeURIComponent(document.cookie.split('; ').find(c=>c.startsWith('backuphub_csrf='))?.slice('backuphub_csrf='.length)??'');}
  async function api<T>(path:string,opts:RequestInit={}):Promise<T>{const r=await fetch('/api/v1/backup'+path,{credentials:'same-origin',...opts});const body=await r.json().catch(()=>null);
@@ -52,10 +54,10 @@
  function jsonBody(value:unknown):RequestInit{return {method:'POST',headers:{'Content-Type':'application/json','X-BackupHub-CSRF':csrf()},body:JSON.stringify(value)};}
  function actionBody():RequestInit{return {method:'POST',headers:{'X-BackupHub-CSRF':csrf()}};}
  async function refresh(){busy=true;error='';
-  try{const [a,b,c,d,e,f]=await Promise.all([
-   api<{sources:Source[]}>('/sources'),api<{storages:Storage[]}>('/storages'),api<{schedules:Profile[]}>('/schedules'),
-   api<{jobs:Job[]}>('/jobs'),api<{snapshots:Snapshot[]}>('/snapshots'),api<{runs:Run[]}>('/runs')]);
-   sources=a.sources;storages=b.storages;schedules=c.schedules;jobs=d.jobs;snapshots=e.snapshots;runs=f.runs;loaded=true;
+  try{const [a,b,c,d,e]=await Promise.all([
+   api<{sources:Source[]}>('/sources'),api<{storages:Storage[]}>('/storages'),api<{jobs:Job[]}>('/jobs'),
+   api<{snapshots:Snapshot[]}>('/snapshots'),api<{runs:Run[]}>('/runs')]);
+   sources=a.sources;storages=b.storages;jobs=c.jobs;snapshots=d.snapshots;runs=e.runs;loaded=true;
   }catch(e){error=e instanceof Error?e.message:'Данные недоступны';}
   finally{busy=false;}
  }
@@ -64,15 +66,19 @@
   finally{busy=false;}
  }
  async function createSource(){await runAction(async()=>{const v=await api<Source>('/sources',jsonBody(sourceForm));notice='Источник «'+v.name+'» добавлен';sourceForm={name:'',kind:'smb',host:'',share:'',path:'',username:'',password:'',database:''};});}
- async function createSchedule(){await runAction(async()=>{const [h,m]=scheduleForm.time.split(':').map(Number);
-  let interval=scheduleForm.interval*(scheduleForm.unit==='days'?1440:scheduleForm.unit==='hours'?60:1);
-  const days=scheduleForm.mode==='weekly'?weekdays.filter(x=>scheduleForm.weekdays.includes(x.id)).map(x=>x.id).join(','):'';
-  const v=await api<Profile>('/schedules',jsonBody({name:scheduleForm.name,mode:scheduleForm.mode,hour:h,minute:m,days_of_week:days,timezone:scheduleForm.timezone,interval_minutes:scheduleForm.mode==='interval'?interval:0}));
-  notice='Расписание «'+v.name+'» создано';scheduleForm.name='';
- });}
- async function createJob(){await runAction(async()=>{const v=await api<Job>('/jobs',jsonBody(jobForm));notice='Задание «'+v.name+'» создано';jobForm={name:'',source_id:'',repository_id:'',schedule_id:''};});}
+ async function createJob(runNow:boolean){
+  await runAction(async()=>{
+   const days=scheduleForm.mode==='weekly'?weekdays.filter(x=>scheduleForm.weekdays.includes(x.id)).map(x=>x.id).join(','):'';
+   const schedule={mode:scheduleForm.mode,interval_value:scheduleForm.mode==='interval'?scheduleForm.interval:0,
+     interval_unit:scheduleForm.mode==='interval'?scheduleForm.unit:'',
+     first_run:scheduleForm.startDate+'T'+scheduleForm.time,
+     days_of_week:days,timezone:scheduleForm.timezone};
+   const v=await api<Job>('/jobs',jsonBody({...jobForm,schedule,run_now:runNow}));
+   notice=runNow?'Задание «'+v.name+'» сохранено и поставлено в очередь':'Задание «'+v.name+'» создано';
+   jobForm={name:'',source_id:'',repository_id:''};
+  });
+ }
  async function jobAction(id:string,op:'run'|'pause'|'resume'){await runAction(async()=>{await api('/jobs/'+encodeURIComponent(id)+'/'+op,actionBody());notice=op==='run'?'Задание поставлено в очередь':op==='pause'?'Задание приостановлено':'Задание включено';});}
- async function deleteSchedule(id:string){if(!window.confirm('Удалить неиспользуемое расписание?'))return;await runAction(async()=>{await api('/schedules/'+encodeURIComponent(id),{method:'DELETE',headers:{'X-BackupHub-CSRF':csrf()}});notice='Расписание удалено';});}
  async function openSnapshot(s:Snapshot){busy=true;error='';try{const v=await api<{files:File[]}>('/snapshots/'+encodeURIComponent(s.id)+'/files');files=v.files;activeSnapshot=s;selection=[];filter='';}
  catch(e){error=e instanceof Error?e.message:'Не удалось открыть снимок';}finally{busy=false;}}
  function toggleFile(path:string){selection=selection.includes(path)?selection.filter(x=>x!==path):[...selection,path];}
@@ -80,18 +86,23 @@
  async function restore(){if(!activeSnapshot||!window.confirm('Восстановить выбранное в новый каталог сервера? Существующие файлы не будут затронуты.'))return;
   await runAction(async()=>{const r=await api<{directory:string}>('/snapshots/'+encodeURIComponent(activeSnapshot!.id)+'/restore',jsonBody({paths:selection}));notice='Восстановлено в '+r.directory;});}
  function weekdayToggle(day:number,checked:boolean){scheduleForm.weekdays=checked?[...scheduleForm.weekdays,day]:scheduleForm.weekdays.filter(n=>n!==day);}
- onMount(()=>{scheduleForm.timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC';void refresh();});
+ onMount(()=>{
+  scheduleForm.timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC';
+  const d=new Date();d.setDate(d.getDate()+1);
+  scheduleForm.startDate=[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
+  void refresh();
+ });
  $effect(()=>{if(section){editing=false;}});
 </script>
 
 <section class="work-area">
  <header class="workspace-header">
   <div><span class="eyebrow">{section==='overview'?'ПАНЕЛЬ УПРАВЛЕНИЯ':'BACKUPHUB / УПРАВЛЕНИЕ'}</span>
-   <h1>{({overview:'Обзор',jobs:'Задания',sources:'Источники',storages:'Хранилища',schedules:'Расписания',history:'История копий',runs:'Журнал выполнения'} as Record<Section,string>)[section]}</h1>
-   <p class="secondary">{({overview:'Состояние резервного копирования на одной странице.',jobs:'Что, куда и когда копировать.',sources:'Серверы, базы данных и каталоги для резервирования.',storages:'Места хранения резервных копий.',schedules:'Создавайте расписания один раз и используйте в заданиях.',history:'Снимки, файлы и восстановление.',runs:'Все запуски и результаты резервного копирования.'} as Record<Section,string>)[section]}</p>
+   <h1>{({overview:'Обзор',jobs:'Задания',sources:'Источники',storages:'Хранилища',history:'История копий',runs:'Журнал выполнения'} as Record<Section,string>)[section]}</h1>
+   <p class="secondary">{({overview:'Состояние резервного копирования на одной странице.',jobs:'Что, куда и когда копировать.',sources:'Серверы, базы данных и каталоги для резервирования.',storages:'Места хранения резервных копий.',history:'Снимки, файлы и восстановление.',runs:'Все запуски и результаты резервного копирования.'} as Record<Section,string>)[section]}</p>
   </div>
   <div class="heading-actions"><button class="outline" onclick={()=>void refresh()} disabled={busy}>Обновить</button>
-  {#if canConfigure&&['sources','schedules','jobs'].includes(section)}<button class="primary" onclick={()=>editing=!editing}>{editing?'Закрыть':'＋ '+(section==='sources'?'Источник':section==='jobs'?'Задание':'Расписание')}</button>{/if}</div>
+  {#if canConfigure&&['sources','jobs'].includes(section)}<button class="primary" onclick={()=>editing=!editing}>{editing?'Закрыть':'＋ '+(section==='sources'?'Источник':'Задание')}</button>{/if}</div>
  </header>
  {#if error}<div class="error" role="alert">{error}</div>{/if}
  {#if notice}<div class="notice" role="status">{notice}</div>{/if}
@@ -107,7 +118,7 @@
   <div class="two-column">
    <section class="detail-card">
     <div class="section-head"><h2>Задания</h2><button class="text-button" onclick={()=>onNavigate('jobs')}>Все задания →</button></div>
-    {#if jobs.length===0}<div class="empty-state"><strong>Пока нет заданий</strong><p>Подключите источник, выберите хранилище и расписание.</p><button class="outline" onclick={()=>onNavigate('jobs')}>Перейти к заданиям</button></div>
+    {#if jobs.length===0}<div class="empty-state"><strong>Пока нет заданий</strong><p>Добавьте источник, затем создайте задание с хранилищем и периодичностью.</p><button class="outline" onclick={()=>onNavigate('jobs')}>Перейти к заданиям</button></div>
     {:else}<div class="compact-list">{#each jobs.slice(0,6) as j(j.id)}<div class="compact-row"><div><strong>{j.name}</strong><small>{j.source_name} · {storages.find(s=>s.id===j.repository_id)?.name??j.repository_id}</small></div><span class:muted={!j.enabled} class="status">{j.enabled?'Активно':'Пауза'}</span></div>{/each}</div>{/if}
    </section>
    <section class="detail-card">
@@ -138,56 +149,58 @@
    {#if sources.length===0}<div class="empty-state"><strong>Источников пока нет</strong><p>Добавьте каталог, файловый сервер или базу данных.</p></div>
    {:else}<div class="table-scroll"><table><thead><tr><th>Название</th><th>Тип</th><th>Расположение</th><th>Заданий</th></tr></thead><tbody>{#each sources as s(s.id)}<tr><td><strong>{s.name}</strong></td><td><span class="type-label">{sourceType(s.kind)}</span></td><td class="wrap-cell">{sourcePath(s)}</td><td>{jobs.filter(j=>j.source_id===s.id).length}</td></tr>{/each}</tbody></table></div>{/if}
   </section>
- {:else if section==='schedules'}
-  {#if editing&&canConfigure}
-   <section class="detail-card editor-card"><div class="section-head"><h2>Новое расписание</h2><span class="step-hint">2. Периодичность</span></div>
-   <form class="form-grid" onsubmit={(e)=>{e.preventDefault();void createSchedule();}}>
-    <label>Название<input bind:value={scheduleForm.name} required maxlength="120" placeholder="Ежедневно ночью"/></label>
-    <label>Повторение<select bind:value={scheduleForm.mode}><option value="daily">Каждый день</option><option value="weekly">В выбранные дни недели</option><option value="interval">Через заданный интервал</option></select></label>
-    {#if scheduleForm.mode==='interval'}
-     <label>Каждые<input type="number" min={scheduleForm.unit==='minutes'?5:1} max="525600" bind:value={scheduleForm.interval} required/></label>
-     <label>Единицы<select bind:value={scheduleForm.unit}><option value="minutes">Минуты</option><option value="hours">Часы</option><option value="days">Дни</option></select></label>
-    {:else}
-     <label>Время запуска<input type="time" bind:value={scheduleForm.time} required/></label>
-     <label>Часовой пояс<input bind:value={scheduleForm.timezone} required placeholder="Europe/Moscow"/></label>
-     {#if scheduleForm.mode==='weekly'}
-      <div class="full"><span class="field-label">Дни недели</span><div class="weekday-picker">{#each weekdays as d(d.id)}<label><input type="checkbox" checked={scheduleForm.weekdays.includes(d.id)} onchange={(e)=>weekdayToggle(d.id,e.currentTarget.checked)}/>{d.label}</label>{/each}</div></div>
-     {/if}
-    {/if}
-    <div class="form-actions"><button class="primary" type="submit" disabled={busy||(scheduleForm.mode==='weekly'&&scheduleForm.weekdays.length===0)}>Создать расписание</button><button type="button" class="outline" onclick={()=>editing=false}>Отмена</button></div>
-   </form>
-   </section>
-  {/if}
-  <section class="detail-card">
-   <div class="section-head"><h2>Расписания <span class="count">{schedules.length}</span></h2></div>
-   {#if schedules.length===0}<div class="empty-state"><strong>Нет расписаний</strong><p>Создайте периодичность и привязывайте её к любым заданиям.</p></div>
-   {:else}<div class="table-scroll"><table><thead><tr><th>Название</th><th>Правило</th><th>Часовой пояс</th><th>Заданий</th><th></th></tr></thead><tbody>
-    {#each schedules as p(p.id)}<tr><td><strong>{p.name}</strong></td><td>{scheduleText(p)}</td><td>{p.mode==='interval'?'—':p.timezone}</td><td>{jobs.filter(j=>j.schedule_id===p.id).length}</td><td class="action-cell">{#if canConfigure&&jobs.every(j=>j.schedule_id!==p.id)}<button class="text-button" onclick={()=>void deleteSchedule(p.id)}>Удалить</button>{/if}</td></tr>{/each}
-   </tbody></table></div>{/if}
-  </section>
  {:else if section==='jobs'}
   {#if editing&&canConfigure}
-   <section class="detail-card editor-card"><div class="section-head"><h2>Новое задание</h2><span class="step-hint">3. Связать компоненты</span></div>
-    {#if sources.length===0||availableStorages.length===0||schedules.length===0}
-     <div class="empty-state"><strong>Не все компоненты готовы</strong><p>Для задания нужны источник, доступное хранилище и расписание.</p>
-     <div class="quick-links"><button class="outline" onclick={()=>onNavigate('sources')}>Источники</button><button class="outline" onclick={()=>onNavigate('storages')}>Хранилища</button><button class="outline" onclick={()=>onNavigate('schedules')}>Расписания</button></div></div>
+   <section class="detail-card editor-card">
+    <div class="section-head"><h2>Новое задание</h2></div>
+    {#if sources.length===0||availableStorages.length===0}
+     <div class="empty-state"><strong>Нужны источник и доступное хранилище</strong>
+      <p>Добавьте источник и укажите, куда сохранять резервные копии.</p>
+      <div class="quick-links"><button class="outline" onclick={()=>onNavigate('sources')}>Источники</button><button class="outline" onclick={()=>onNavigate('storages')}>Хранилища</button></div></div>
     {:else}
-     <form class="form-grid" onsubmit={(e)=>{e.preventDefault();void createJob();}}>
-      <label class="full">Название задания<input bind:value={jobForm.name} required maxlength="120" placeholder="Ежедневный бэкап бухгалтерии"/></label>
-      <label>Откуда копировать<select bind:value={jobForm.source_id} required><option value="" disabled>Выберите источник</option>{#each sources as s(s.id)}<option value={s.id}>{s.name} · {sourceType(s.kind)}</option>{/each}</select></label>
-      <label>Куда сохранять<select bind:value={jobForm.repository_id} required><option value="" disabled>Выберите хранилище</option>{#each availableStorages as s(s.id)}<option value={s.id}>{s.name}</option>{/each}</select></label>
-      <label class="full">Когда выполнять<select bind:value={jobForm.schedule_id} required><option value="" disabled>Выберите расписание</option>{#each schedules as p(p.id)}<option value={p.id}>{p.name} — {scheduleText(p)}</option>{/each}</select></label>
-      <div class="form-actions"><button type="submit" class="primary" disabled={busy}>Создать задание</button><button type="button" class="outline" onclick={()=>editing=false}>Отмена</button></div>
+     <form class="form-grid" onsubmit={(e)=>{e.preventDefault(); const submitter=(e as SubmitEvent).submitter as HTMLButtonElement|null;void createJob(submitter?.value==='run');}}>
+      <label class="full">Название задания<input bind:value={jobForm.name} required maxlength="120" placeholder="Резервная копия бухгалтерии"/></label>
+      <label>Источник<select bind:value={jobForm.source_id} required><option value="" disabled>Выберите источник</option>{#each sources as s(s.id)}<option value={s.id}>{s.name} · {sourceType(s.kind)}</option>{/each}</select></label>
+      <label>Хранилище<select bind:value={jobForm.repository_id} required><option value="" disabled>Выберите хранилище</option>{#each availableStorages as s(s.id)}<option value={s.id}>{s.name}</option>{/each}</select></label>
+      <div class="full schedule-heading"><h3>Периодичность</h3><p class="secondary">Настраивается здесь, отдельно создавать расписание не нужно.</p></div>
+      <label class="full">Как часто выполнять
+       <select bind:value={scheduleForm.mode}>
+        <option value="daily">Каждый день в указанное время</option>
+        <option value="weekly">В выбранные дни недели</option>
+        <option value="interval">Каждые N минут, часов или дней</option>
+       </select>
+      </label>
+      {#if scheduleForm.mode==='interval'}
+       <label>Каждые<input type="number" min={scheduleForm.unit==='minutes'?5:1} max={scheduleForm.unit==='days'?365:scheduleForm.unit==='hours'?8760:525600} step="1" bind:value={scheduleForm.interval} required/></label>
+       <label>Единицы<select bind:value={scheduleForm.unit}><option value="minutes">Минуты</option><option value="hours">Часы</option><option value="days">Дни</option></select></label>
+      {:else if scheduleForm.mode==='weekly'}
+       <div class="full"><span class="field-label">Дни недели</span><div class="weekday-picker">{#each weekdays as d(d.id)}<label><input type="checkbox" checked={scheduleForm.weekdays.includes(d.id)} onchange={(e)=>weekdayToggle(d.id,e.currentTarget.checked)}/>{d.label}</label>{/each}</div></div>
+      {/if}
+      <label>Дата начала<input type="date" bind:value={scheduleForm.startDate} required/></label>
+      <label>Время первого запуска<input type="time" bind:value={scheduleForm.time} required/></label>
+      <label class="full">Часовой пояс<input bind:value={scheduleForm.timezone} required placeholder="Europe/Moscow"/></label>
+      <p class="helper full">{scheduleForm.mode==='interval'?'Первый плановый запуск — в указанную дату и время. Последующие запуски отсчитываются от неё, а не от завершения копирования. Для интервала в днях местное время сохраняется.':'Плановые запуски начнутся не раньше выбранной даты и времени.'} Ручной запуск доступен отдельно и не изменяет план.</p>
+      <div class="form-actions">
+       <button type="submit" value="save" class="outline" disabled={busy||(scheduleForm.mode==='weekly'&&scheduleForm.weekdays.length===0)}>Сохранить задание</button>
+       <button type="submit" value="run" class="primary" disabled={busy||(scheduleForm.mode==='weekly'&&scheduleForm.weekdays.length===0)}>Сохранить и запустить</button>
+       <button type="button" class="outline" onclick={()=>editing=false}>Отмена</button>
+      </div>
      </form>
     {/if}
    </section>
   {/if}
   <section class="detail-card">
-   <div class="section-head"><h2>Все задания <span class="count">{jobs.length}</span></h2></div>
-   {#if jobs.length===0}<div class="empty-state"><strong>Нет заданий резервного копирования</strong><p>Создайте задание, указав источник, хранилище и расписание.</p></div>
-   {:else}<div class="table-scroll"><table><thead><tr><th>Задание</th><th>Назначение</th><th>Расписание</th><th>Следующий запуск</th><th>Состояние</th><th></th></tr></thead><tbody>
-    {#each jobs as j(j.id)}<tr><td><strong>{j.name}</strong><small class="subline">{j.source_name}</small></td><td>{storages.find(s=>s.id===j.repository_id)?.name??j.repository_id}</td><td>{j.schedule_name||'—'}</td><td>{j.enabled?fmt(j.next_run):'—'}</td><td><span class:muted={!j.enabled} class="status">{j.enabled?'Активно':'Пауза'}</span></td><td class="action-cell">{#if canRun}<button class="text-button" onclick={()=>void jobAction(j.id,'run')} disabled={busy||!j.enabled}>Запустить</button>{/if}{#if canConfigure}<button class="text-button" onclick={()=>void jobAction(j.id,j.enabled?'pause':'resume')} disabled={busy}>{j.enabled?'Пауза':'Включить'}</button>{/if}</td></tr>{/each}
-   </tbody></table></div>{/if}
+   <div class="section-head"><h2>Задания резервного копирования <span class="count">{jobs.length}</span></h2></div>
+   {#if jobs.length===0}<div class="empty-state"><strong>Заданий пока нет</strong><p>Создайте задание: источник, хранилище и время запуска — всё в одной форме.</p></div>
+   {:else}<div class="table-scroll"><table><thead><tr><th>Задание</th><th>Хранилище</th><th>Периодичность</th><th>Следующий запуск</th><th>Состояние</th><th></th></tr></thead><tbody>
+    {#each jobs as j(j.id)}<tr><td><strong>{j.name}</strong><small class="subline">{j.source_name}</small></td>
+     <td>{storages.find(s=>s.id===j.repository_id)?.name??j.repository_id}</td>
+     <td class="wrap-cell">{scheduleText(j.schedule)}</td>
+     <td>{j.enabled?fmt(j.next_run):'—'}</td>
+     <td><span class:muted={!j.enabled} class="status">{j.enabled?'Активно':'Пауза'}</span></td>
+     <td class="action-cell">{#if canRun}<button class="text-button" onclick={()=>void jobAction(j.id,'run')} disabled={busy||!j.enabled}>Запустить сейчас</button>{/if}
+      {#if canConfigure}<button class="text-button" onclick={()=>void jobAction(j.id,j.enabled?'pause':'resume')} disabled={busy}>{j.enabled?'Пауза':'Включить'}</button>{/if}</td>
+    </tr>{/each}</tbody></table></div>{/if}
   </section>
  {:else if section==='storages'}
   {#if canConfigure}<StoragePane onCreated={refresh}/>{:else}
@@ -235,6 +248,9 @@
  .form-grid .full,.form-actions,.full{grid-column:1/-1}
  .form-actions{margin-top:7px}
  .field-label{display:block;font-weight:600;font-size:13px;margin-bottom:10px}
+ .schedule-heading{padding-top:7px;border-top:1px solid var(--line)}
+ .schedule-heading h3{margin:0 0 5px;font-size:16px}
+ .schedule-heading p{margin:0}
  .weekday-picker{display:flex;flex-wrap:wrap;gap:8px}
  .weekday-picker label{display:flex;flex-direction:row;align-items:center;gap:7px;border:1px solid var(--line);padding:10px;border-radius:9px;cursor:pointer}
  .weekday-picker input{width:auto}

@@ -82,35 +82,6 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 				method(w, r, http.MethodGet)
 			}
 			return
-		case "schedules":
-			switch r.Method {
-			case http.MethodGet:
-				items, err := s.backup.ListSchedules(r.Context())
-				if err != nil {
-					fail(err)
-					return
-				}
-				jsonResponse(w, 200, map[string]any{"schedules": items})
-			case http.MethodPost:
-				if !isAdmin {
-					jsonResponse(w, 403, map[string]string{"error": "admin required"})
-					return
-				}
-				var input backup.ScheduleProfile
-				if !decode(w, r, &input) {
-					return
-				}
-				item, err := s.backup.CreateSchedule(r.Context(), input)
-				if err != nil {
-					fail(err)
-					return
-				}
-				s.backup.Audit(r.Context(), user.ID, "schedule.created", item.ID)
-				jsonResponse(w, 201, item)
-			default:
-				method(w, r, http.MethodGet)
-			}
-			return
 		case "jobs":
 			switch r.Method {
 			case http.MethodGet:
@@ -192,19 +163,6 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, 200, map[string]any{"snapshots": snapshots})
 			return
 		}
-	}
-	if len(path) == 2 && path[0] == "schedules" {
-		if !isAdmin || r.Method != http.MethodDelete {
-			jsonResponse(w, 403, map[string]string{"error": "administrator and DELETE required"})
-			return
-		}
-		if err := s.backup.DeleteSchedule(r.Context(), path[1]); err != nil {
-			fail(err)
-			return
-		}
-		s.backup.Audit(r.Context(), user.ID, "schedule.deleted", path[1])
-		jsonResponse(w, 200, map[string]bool{"deleted": true})
-		return
 	}
 	if len(path) == 3 && path[0] == "jobs" {
 		id, action := path[1], path[2]

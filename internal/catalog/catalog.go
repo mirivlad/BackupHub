@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 7
+const SchemaVersion = 8
 
 // Catalog stores operational state; the portable repository manifest must
 // remain sufficient for rebuilding the snapshot index after database loss.
@@ -244,6 +244,50 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			}
 		}
 		if _, err = tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS schedule_entries_by_profile ON schedule_entries(profile_id)`); err != nil {
+			return err
+		}
+	}
+	if version < 8 {
+		// Upgrades and migration fixtures may already have some v8 columns.
+		columns := map[string]bool{}
+		rows, queryErr := tx.QueryContext(ctx, `PRAGMA table_info(schedule_profiles)`)
+		if queryErr != nil {
+			return queryErr
+		}
+		for rows.Next() {
+			var cid, notNull, pk int
+			var name, typ string
+			var def sql.NullString
+			if err = rows.Scan(&cid, &name, &typ, &notNull, &def, &pk); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			columns[name] = true
+		}
+		if err = rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		_ = rows.Close()
+		add := map[string]string{
+			"start_at_unix":  "INTEGER NOT NULL DEFAULT 0",
+			"interval_unit":  "TEXT NOT NULL DEFAULT 'minutes'",
+			"interval_value": "INTEGER NOT NULL DEFAULT 0",
+		}
+		for _, key := range []string{"start_at_unix", "interval_unit", "interval_value"} {
+			if !columns[key] {
+				if _, err = tx.ExecContext(ctx, "ALTER TABLE schedule_profiles ADD COLUMN "+key+" "+add[key]); err != nil {
+					return fmt.Errorf("v8 scheduling migration %s: %w", key, err)
+				}
+			}
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE schedule_profiles SET
+          start_at_unix=COALESCE((SELECT MIN(next_run_unix) FROM schedule_entries WHERE profile_id=schedule_profiles.id),0)
+          WHERE start_at_unix=0`); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE schedule_profiles SET interval_value=interval_minutes
+          WHERE interval_value=0 AND mode='interval'`); err != nil {
 			return err
 		}
 	}

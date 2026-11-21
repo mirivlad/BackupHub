@@ -48,11 +48,8 @@ func serviceFixture(t *testing.T) *Service {
 }
 func createTestBackupJob(t *testing.T, svc *Service, ctx context.Context, src Source, repositoryID string) BackupJob {
 	t.Helper()
-	profile, err := svc.CreateSchedule(ctx, ScheduleProfile{Name: "Test schedule", Mode: "interval", IntervalMinutes: 5, Timezone: "UTC"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	job, err := svc.CreateJob(ctx, CreateBackupJob{Name: "Test backup", SourceID: src.ID, ScheduleID: profile.ID, RepositoryID: repositoryID})
+	job, err := svc.CreateJob(ctx, CreateBackupJob{Name: "Test backup", SourceID: src.ID, RepositoryID: repositoryID,
+		Schedule: ScheduleProfile{Mode: "interval", IntervalUnit: "minutes", IntervalValue: 5, FirstRun: "2099-01-01T02:00", Timezone: "UTC"}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,7 +13,7 @@
   type View = 'loading' | 'bootstrap' | 'login' | 'dashboard' | 'error';
 
   let view = $state<View>('loading');
-  type Section='overview'|'jobs'|'sources'|'storages'|'schedules'|'history'|'runs';
+  type Section='overview'|'jobs'|'sources'|'storages'|'history'|'runs';
   type Tab=Section|'audit'|'settings';
   let activeTab=$state<Tab>('overview');
   const navItems=[
@@ -21,7 +21,6 @@
    {id:'jobs',label:'Задания',icon:'jobs',group:'main'},
    {id:'sources',label:'Источники',icon:'sources',group:'main'},
    {id:'storages',label:'Хранилища',icon:'storages',group:'main'},
-   {id:'schedules',label:'Расписания',icon:'schedules',group:'main'},
    {id:'history',label:'История копий',icon:'history',group:'history'},
    {id:'runs',label:'Журнал выполнения',icon:'runs',group:'history'},
    {id:'audit',label:'События безопасности',icon:'audit',group:'system'},

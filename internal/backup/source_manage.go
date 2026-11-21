@@ -51,7 +51,7 @@ func (s *Service) source(ctx context.Context, id string) (Source, Settings, stri
 }
 func (s *Service) Manual(ctx context.Context, id string) error {
 	if !safeID(id) {
-		return errors.New("invalid source ID")
+		return errors.New("invalid job ID")
 	}
 	result, err := s.catalog.DB.ExecContext(ctx, `UPDATE schedule_entries SET next_run_unix=? WHERE id=? AND active_run_id IS NULL`, time.Now().UTC().Unix()-1, id)
 	if err != nil {
@@ -62,7 +62,7 @@ func (s *Service) Manual(ctx context.Context, id string) error {
 		return err
 	}
 	if n == 0 {
-		return errors.New("source not found or already running")
+		return errors.New("job not found or already running")
 	}
 	s.notify()
 	return nil

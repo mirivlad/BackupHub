@@ -4,206 +4,190 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/mirivlad/BackupHub/internal/scheduler"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/mirivlad/BackupHub/internal/scheduler"
 )
 
+// ScheduleProfile belongs to one backup job. It is never created separately.
+// FirstRun is a wall-clock date/time in Timezone: YYYY-MM-DDTHH:mm.
 type ScheduleProfile struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Mode            string `json:"mode"`
-	IntervalMinutes int    `json:"interval_minutes"`
-	DaysOfWeek      string `json:"days_of_week"`
-	Hour            int    `json:"hour"`
-	Minute          int    `json:"minute"`
-	Timezone        string `json:"timezone"`
+	Mode          string `json:"mode"`
+	IntervalValue int    `json:"interval_value"`
+	IntervalUnit  string `json:"interval_unit"`
+	DaysOfWeek    string `json:"days_of_week"`
+	Timezone      string `json:"timezone"`
+	FirstRun      string `json:"first_run"`
+	Hour          int    `json:"hour"`
+	Minute        int    `json:"minute"`
 }
 type BackupJob struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	SourceID     string `json:"source_id"`
-	SourceName   string `json:"source_name"`
-	ScheduleID   string `json:"schedule_id"`
-	ScheduleName string `json:"schedule_name"`
-	RepositoryID string `json:"repository_id"`
-	Enabled      bool   `json:"enabled"`
-	NextRun      string `json:"next_run"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	SourceID     string          `json:"source_id"`
+	SourceName   string          `json:"source_name"`
+	RepositoryID string          `json:"repository_id"`
+	Schedule     ScheduleProfile `json:"schedule"`
+	Enabled      bool            `json:"enabled"`
+	NextRun      string          `json:"next_run"`
+	Queued       bool            `json:"queued,omitempty"`
 }
 type CreateBackupJob struct {
-	Name         string `json:"name"`
-	SourceID     string `json:"source_id"`
-	ScheduleID   string `json:"schedule_id"`
-	RepositoryID string `json:"repository_id"`
+	Name         string          `json:"name"`
+	SourceID     string          `json:"source_id"`
+	RepositoryID string          `json:"repository_id"`
+	Schedule     ScheduleProfile `json:"schedule"`
+	RunNow       bool            `json:"run_now"`
 }
 
-func checkProfile(p ScheduleProfile) error {
-	p.Name = strings.TrimSpace(p.Name)
-	if p.Name == "" || utf8.RuneCountInString(p.Name) > 120 || strings.ContainsAny(p.Name, "\x00\r\n") {
-		return errors.New("invalid schedule name")
+func validateSchedule(p ScheduleProfile) (ScheduleProfile, time.Time, int, error) {
+	if len(p.Timezone) == 0 || len(p.Timezone) > 100 || strings.ContainsAny(p.Timezone, "\x00\r\n") {
+		return p, time.Time{}, 0, errors.New("invalid timezone")
+	}
+	zone, err := time.LoadLocation(p.Timezone)
+	if err != nil {
+		return p, time.Time{}, 0, errors.New("unknown timezone")
+	}
+	if len(p.FirstRun) != 16 {
+		return p, time.Time{}, 0, errors.New("first run date and time required (YYYY-MM-DDTHH:mm)")
+	}
+	anchor, err := time.ParseInLocation("2006-01-02T15:04", p.FirstRun, zone)
+	if err != nil || anchor.Format("2006-01-02T15:04") != p.FirstRun {
+		return p, time.Time{}, 0, errors.New("invalid first run date/time in selected timezone")
+	}
+	p.Hour = anchor.Hour()
+	p.Minute = anchor.Minute()
+	intervalMinutes := 0
+	if p.IntervalValue < 0 || p.IntervalValue > 525600 {
+		return p, time.Time{}, 0, errors.New("invalid interval")
 	}
 	switch p.Mode {
 	case "interval":
-		if p.IntervalMinutes < 5 || p.IntervalMinutes > 525600 {
-			return errors.New("interval must be 5..525600 minutes")
+		switch p.IntervalUnit {
+		case "minutes":
+			intervalMinutes = p.IntervalValue
+		case "hours":
+			intervalMinutes = p.IntervalValue * 60
+		case "days":
+			intervalMinutes = p.IntervalValue * 1440
+		default:
+			return p, time.Time{}, 0, errors.New("choose minutes, hours or days")
 		}
-	case "daily", "weekly":
-		if p.Hour < 0 || p.Hour > 23 || p.Minute < 0 || p.Minute > 59 {
-			return errors.New("invalid time")
+		if p.IntervalValue < 1 || p.IntervalValue > 525600 || intervalMinutes < 5 || intervalMinutes > 525600 {
+			return p, time.Time{}, 0, errors.New("invalid interval (5 minutes to 365 days)")
 		}
-		if p.Mode == "weekly" {
-			if p.DaysOfWeek == "" {
-				return errors.New("choose at least one weekday")
+		p.DaysOfWeek = ""
+	case "daily":
+		p.IntervalUnit = ""
+		p.IntervalValue = 0
+		p.DaysOfWeek = ""
+	case "weekly":
+		p.IntervalUnit = ""
+		p.IntervalValue = 0
+		if p.DaysOfWeek == "" {
+			return p, time.Time{}, 0, errors.New("choose weekdays")
+		}
+		seen := map[int]bool{}
+		for _, x := range strings.Split(p.DaysOfWeek, ",") {
+			n, e := strconv.Atoi(x)
+			if e != nil || n < 0 || n > 6 || seen[n] {
+				return p, time.Time{}, 0, errors.New("invalid weekdays")
 			}
-			seen := map[int]bool{}
-			for _, entry := range strings.Split(p.DaysOfWeek, ",") {
-				day, err := strconv.Atoi(entry)
-				if err != nil || day < 0 || day > 6 || seen[day] {
-					return errors.New("invalid weekdays")
-				}
-				seen[day] = true
-			}
+			seen[n] = true
 		}
 	default:
-		return errors.New("invalid schedule mode")
+		return p, time.Time{}, 0, errors.New("invalid scheduling mode")
 	}
-	if p.Timezone == "" {
-		return errors.New("timezone is required")
-	}
-	if len(p.Timezone) > 100 || strings.ContainsAny(p.Timezone, "\x00\r\n") {
-		return errors.New("invalid timezone")
-	}
-	if _, err := time.LoadLocation(p.Timezone); err != nil {
-		return errors.New("unknown timezone")
-	}
-	return nil
+	return p, anchor, intervalMinutes, nil
 }
-func NextScheduleTime(p ScheduleProfile, after time.Time) (time.Time, error) {
-	if err := checkProfile(p); err != nil {
-		return time.Time{}, err
-	}
-	return scheduler.NextOccurrence(p.Mode, p.IntervalMinutes, p.DaysOfWeek, p.Hour, p.Minute, p.Timezone, after)
+func nextSchedule(p ScheduleProfile, anchor, after time.Time) (time.Time, error) {
+	return scheduler.NextAnchoredOccurrence(p.Mode, p.IntervalValue, p.IntervalUnit, p.DaysOfWeek, p.Hour, p.Minute, p.Timezone, anchor, after)
 }
-func (s *Service) CreateSchedule(ctx context.Context, p ScheduleProfile) (ScheduleProfile, error) {
-	if err := checkProfile(p); err != nil {
-		return ScheduleProfile{}, err
+func profileInterval(p ScheduleProfile, minutes int) int {
+	if p.Mode == "daily" {
+		return 24 * 3600
 	}
-	id, err := randomID()
-	if err != nil {
-		return ScheduleProfile{}, err
+	if p.Mode == "weekly" {
+		return 7 * 24 * 3600
 	}
-	p.ID = id
-	_, err = s.catalog.DB.ExecContext(ctx, `INSERT INTO schedule_profiles(id,name,mode,interval_minutes,days_of_week,hour,minute,timezone,created_at) VALUES(?,?,?,?,?,?,?,?,?)`,
-		p.ID, strings.TrimSpace(p.Name), p.Mode, p.IntervalMinutes, p.DaysOfWeek, p.Hour, p.Minute, p.Timezone, time.Now().UTC().Format(time.RFC3339Nano))
-	if err != nil {
-		return ScheduleProfile{}, err
-	}
-	return p, nil
-}
-func (s *Service) ListSchedules(ctx context.Context) ([]ScheduleProfile, error) {
-	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT id,name,mode,interval_minutes,days_of_week,hour,minute,timezone FROM schedule_profiles ORDER BY name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []ScheduleProfile{}
-	for rows.Next() {
-		var p ScheduleProfile
-		if err = rows.Scan(&p.ID, &p.Name, &p.Mode, &p.IntervalMinutes, &p.DaysOfWeek, &p.Hour, &p.Minute, &p.Timezone); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
-}
-func (s *Service) DeleteSchedule(ctx context.Context, id string) error {
-	if !safeID(id) {
-		return errors.New("invalid schedule ID")
-	}
-	res, err := s.catalog.DB.ExecContext(ctx, `DELETE FROM schedule_profiles WHERE id=? AND NOT EXISTS (SELECT 1 FROM schedule_entries WHERE profile_id=?)`, id, id)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return errors.New("schedule not found or used by a job")
-	}
-	return nil
+	return minutes * 60
 }
 func (s *Service) CreateJob(ctx context.Context, in CreateBackupJob) (BackupJob, error) {
-	if !safeID(in.SourceID) || !safeID(in.ScheduleID) || !safeID(in.RepositoryID) {
-		return BackupJob{}, errors.New("invalid source, schedule or storage")
+	var empty BackupJob
+	if !safeID(in.SourceID) || !safeID(in.RepositoryID) {
+		return empty, errors.New("invalid source or storage")
 	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" || utf8.RuneCountInString(name) > 120 || strings.ContainsAny(name, "\x00\r\n") {
-		return BackupJob{}, errors.New("invalid job name")
+		return empty, errors.New("invalid job name")
 	}
-	if _, err := s.repositoryFor(ctx, in.RepositoryID); err != nil {
-		return BackupJob{}, errors.New("destination storage unavailable")
+	p, anchor, minutes, err := validateSchedule(in.Schedule)
+	if err != nil {
+		return empty, err
+	}
+	if _, err = s.repositoryFor(ctx, in.RepositoryID); err != nil {
+		return empty, errors.New("destination storage unavailable")
 	}
 	var sourceName string
-	if err := s.catalog.DB.QueryRowContext(ctx, "SELECT display_name FROM sources WHERE id=?", in.SourceID).Scan(&sourceName); err != nil {
-		return BackupJob{}, err
+	if err = s.catalog.DB.QueryRowContext(ctx, "SELECT display_name FROM sources WHERE id=?", in.SourceID).Scan(&sourceName); err != nil {
+		return empty, errors.New("source not found")
 	}
-	var p ScheduleProfile
-	err := s.catalog.DB.QueryRowContext(ctx, `SELECT id,name,mode,interval_minutes,days_of_week,hour,minute,timezone FROM schedule_profiles WHERE id=?`, in.ScheduleID).Scan(
-		&p.ID, &p.Name, &p.Mode, &p.IntervalMinutes, &p.DaysOfWeek, &p.Hour, &p.Minute, &p.Timezone)
+	now := time.Now().UTC()
+	next, err := nextSchedule(p, anchor, now)
 	if err != nil {
-		return BackupJob{}, err
-	}
-	next, err := NextScheduleTime(p, time.Now().UTC())
-	if err != nil {
-		return BackupJob{}, err
+		return empty, err
 	}
 	id, err := randomID()
 	if err != nil {
-		return BackupJob{}, err
+		return empty, err
+	}
+	nextUnix := next.Unix()
+	if in.RunNow {
+		nextUnix = now.Unix()
 	}
 	tx, err := s.catalog.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return BackupJob{}, err
+		return empty, err
 	}
 	defer tx.Rollback()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = tx.ExecContext(ctx, `INSERT INTO jobs(id,dataset_id,schedule_json,created_at) VALUES(?,?,?,?)`, id, in.SourceID, "{}", now)
+	created := now.Format(time.RFC3339Nano)
+	// One profile per job, generated within the same transaction.
+	_, err = tx.ExecContext(ctx, `INSERT INTO schedule_profiles(id,name,mode,interval_minutes,days_of_week,hour,minute,timezone,created_at,start_at_unix,interval_unit,interval_value)
+ VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, id, "job-"+id, p.Mode, minutes, p.DaysOfWeek, p.Hour, p.Minute, p.Timezone, created, anchor.Unix(), p.IntervalUnit, p.IntervalValue)
 	if err == nil {
-		_, err = tx.ExecContext(ctx, `INSERT INTO schedule_entries(id,dataset_id,kind,interval_seconds,next_run_unix,enabled,created_at,profile_id,display_name)
-  VALUES(?,?,?,?,?,?,?,?,?)`, id, in.SourceID, "backup", profileInterval(p), next.Unix(), 1, now, p.ID, name)
+		_, err = tx.ExecContext(ctx, `INSERT INTO jobs(id,dataset_id,schedule_json,created_at) VALUES(?,?,?,?)`, id, in.SourceID, "{}", created)
 	}
 	if err == nil {
-		_, err = tx.ExecContext(ctx, "INSERT INTO schedule_repositories(schedule_id,repository_id) VALUES(?,?)", id, in.RepositoryID)
+		_, err = tx.ExecContext(ctx, `INSERT INTO schedule_entries(id,dataset_id,kind,interval_seconds,next_run_unix,enabled,created_at,profile_id,display_name)
+ VALUES(?,?,?,?,?,?,?,?,?)`, id, in.SourceID, "backup", profileInterval(p, minutes), nextUnix, 1, created, id, name)
+	}
+	if err == nil {
+		_, err = tx.ExecContext(ctx, `INSERT INTO schedule_repositories(schedule_id,repository_id) VALUES(?,?)`, id, in.RepositoryID)
 	}
 	if err == nil {
 		err = tx.Commit()
 	}
 	if err != nil {
-		return BackupJob{}, err
+		return empty, fmt.Errorf("create job: %w", err)
 	}
 	s.notify()
-	return BackupJob{ID: id, Name: name, SourceID: in.SourceID, SourceName: sourceName, ScheduleID: p.ID, ScheduleName: p.Name, RepositoryID: in.RepositoryID, Enabled: true, NextRun: next.Format(time.RFC3339)}, nil
-}
-func profileInterval(p ScheduleProfile) int {
-	switch p.Mode {
-	case "daily":
-		return 24 * 3600
-	case "weekly":
-		return 7 * 24 * 3600
-	default:
-		return p.IntervalMinutes * 60
-	}
+	return BackupJob{ID: id, Name: name, SourceID: in.SourceID, SourceName: sourceName, RepositoryID: in.RepositoryID, Schedule: p, Enabled: true, NextRun: time.Unix(nextUnix, 0).UTC().Format(time.RFC3339), Queued: in.RunNow}, nil
 }
 func (s *Service) ListJobs(ctx context.Context) ([]BackupJob, error) {
-	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT sch.id,COALESCE(NULLIF(sch.display_name,''),src.display_name),src.id,src.display_name,
-  COALESCE(sch.profile_id,''),COALESCE(p.name,''),COALESCE(sr.repository_id,'primary'),sch.enabled,sch.next_run_unix
-  FROM schedule_entries sch JOIN sources src ON src.id=sch.dataset_id
-  LEFT JOIN schedule_profiles p ON p.id=sch.profile_id
-  LEFT JOIN schedule_repositories sr ON sr.schedule_id=sch.id
-  WHERE sch.kind='backup' ORDER BY sch.created_at DESC,sch.id DESC`)
+	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT e.id,COALESCE(NULLIF(e.display_name,''),src.display_name),
+ src.id,src.display_name,COALESCE(sr.repository_id,'primary'),e.enabled,e.next_run_unix,
+ COALESCE(p.mode,'interval'),COALESCE(p.interval_minutes,e.interval_seconds/60),
+ COALESCE(p.days_of_week,''),COALESCE(p.hour,0),COALESCE(p.minute,0),
+ COALESCE(p.timezone,'UTC'),COALESCE(p.start_at_unix,0),
+ COALESCE(p.interval_unit,'minutes'),COALESCE(p.interval_value,e.interval_seconds/60)
+ FROM schedule_entries e JOIN sources src ON src.id=e.dataset_id
+ LEFT JOIN schedule_profiles p ON p.id=e.profile_id
+ LEFT JOIN schedule_repositories sr ON sr.schedule_id=e.id
+ WHERE e.kind='backup' ORDER BY e.created_at DESC,e.id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -211,11 +195,23 @@ func (s *Service) ListJobs(ctx context.Context) ([]BackupJob, error) {
 	out := []BackupJob{}
 	for rows.Next() {
 		var j BackupJob
-		var enabled int
-		var next int64
-		if err = rows.Scan(&j.ID, &j.Name, &j.SourceID, &j.SourceName, &j.ScheduleID, &j.ScheduleName, &j.RepositoryID, &enabled, &next); err != nil {
+		var enabled, minutes int
+		var next, anchor int64
+		var p ScheduleProfile
+		if err = rows.Scan(&j.ID, &j.Name, &j.SourceID, &j.SourceName, &j.RepositoryID, &enabled, &next,
+			&p.Mode, &minutes, &p.DaysOfWeek, &p.Hour, &p.Minute, &p.Timezone, &anchor, &p.IntervalUnit, &p.IntervalValue); err != nil {
 			return nil, err
 		}
+		if anchor > 0 {
+			zone, loadErr := time.LoadLocation(p.Timezone)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			p.FirstRun = time.Unix(anchor, 0).In(zone).Format("2006-01-02T15:04")
+		} else if p.Mode == "interval" && p.IntervalValue == 0 {
+			p.IntervalValue = minutes
+		}
+		j.Schedule = p
 		j.Enabled = enabled != 0
 		j.NextRun = time.Unix(next, 0).UTC().Format(time.RFC3339)
 		out = append(out, j)
@@ -239,7 +235,8 @@ func (s *Service) DeleteJob(ctx context.Context, id string) error {
 		return errors.New("job has execution history; pause it instead of deleting")
 	}
 	var active sql.NullString
-	if err = tx.QueryRowContext(ctx, `SELECT active_run_id FROM schedule_entries WHERE id=?`, id).Scan(&active); err != nil {
+	var profile sql.NullString
+	if err = tx.QueryRowContext(ctx, `SELECT active_run_id,profile_id FROM schedule_entries WHERE id=?`, id).Scan(&active, &profile); err != nil {
 		return err
 	}
 	if active.Valid {
@@ -253,6 +250,11 @@ func (s *Service) DeleteJob(ctx context.Context, id string) error {
 	}
 	if _, err = tx.ExecContext(ctx, "DELETE FROM jobs WHERE id=?", id); err != nil {
 		return err
+	}
+	if profile.Valid {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM schedule_profiles WHERE id=? AND NOT EXISTS(SELECT 1 FROM schedule_entries WHERE profile_id=?)`, profile.String, profile.String); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

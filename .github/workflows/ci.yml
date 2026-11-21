@@ -83,12 +83,12 @@ jobs:
           if file dist/backuphub | grep -q 'dynamically linked'; then echo 'DEB binary must not depend on the CI runner glibc'; exit 1; fi
       - name: Create and inspect .deb
         run: |
-          sh packaging/debian/build.sh 0.2.0
-          dpkg-deb -c dist/backuphub_0.2.0_amd64.deb | grep '/usr/share/backuphub/web/index.html'
-          dpkg-deb -c dist/backuphub_0.2.0_amd64.deb | grep '/lib/systemd/system/backuphub.service'
+          sh packaging/debian/build.sh 0.2.1
+          dpkg-deb -c dist/backuphub_0.2.1_amd64.deb | grep '/usr/share/backuphub/web/index.html'
+          dpkg-deb -c dist/backuphub_0.2.1_amd64.deb | grep '/lib/systemd/system/backuphub.service'
       - name: Install Debian package and test HTTPS service
         run: |
-          sudo apt-get install -y ./dist/backuphub_0.2.0_amd64.deb
+          sudo apt-get install -y ./dist/backuphub_0.2.1_amd64.deb
           # postinst starts the daemon and initializes Restic; do not interrupt it.
           ready=false
           for i in $(seq 1 30); do
@@ -127,14 +127,13 @@ jobs:
           test -n "$source_id"
           # Adding a source must not add an implicit job.
           curl -fksS -b "$cookies" "$api/backup/jobs" | python3 -c 'import json,sys;assert json.load(sys.stdin)["jobs"] == []'
-          response="$(curl -fksS -b "$cookies" "${headers[@]}" -d '{"name":"CI every hour","mode":"interval","interval_minutes":60,"timezone":"UTC"}' "$api/backup/schedules")"
-          schedule_id="$(printf '%s' "$response" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')"
-          test -n "$schedule_id"
-          job_json="$(python3 -c 'import json,sys;print(json.dumps(dict(name="CI hourly local",source_id=sys.argv[1],schedule_id=sys.argv[2],repository_id="primary")))' "$source_id" "$schedule_id")"
+          # The job owns its schedule, and save-and-run queues immediately.
+          job_json="$(python3 -c 'import json,sys;print(json.dumps(dict(name="CI every 7 days",source_id=sys.argv[1],repository_id="primary",run_now=True,schedule=dict(mode="interval",interval_unit="days",interval_value=7,timezone="UTC",first_run="2099-01-01T02:00"))))' "$source_id")"
           response="$(curl -fksS -b "$cookies" "${headers[@]}" -d "$job_json" "$api/backup/jobs")"
-          job_id="$(printf '%s' "$response" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')"
+          job_id="$(printf '%s' "$response" | python3 -c 'import json,sys;v=json.load(sys.stdin);assert v["queued"] is True;assert v["schedule"]["interval_value"]==7;print(v["id"])')"
           test -n "$job_id"
-          curl -fksS -b "$cookies" "${headers[@]}" -X POST "$api/backup/jobs/$job_id/run" > /dev/null
+          curl -fksS -b "$cookies" "$api/backup/jobs" | python3 -c 'import json,sys;a=json.load(sys.stdin)["jobs"];assert len(a)==1;assert a[0]["schedule"]["first_run"]=="2099-01-01T02:00"'
+          test "$(curl -ksS -o /dev/null -w '%{http_code}' -b "$cookies" "$api/backup/schedules")" = "404"
           snapshot=""
           for i in $(seq 1 60); do
             response="$(curl -fksS -b "$cookies" "$api/backup/snapshots?source_id=$source_id")"
@@ -241,15 +240,15 @@ jobs:
       - name: Verify SHA256 of built Debian artifact
         run: |
           cd release
-          sha256sum -c backuphub_0.2.0_amd64.deb.sha256
+          sha256sum -c backuphub_0.2.1_amd64.deb.sha256
       - name: Publish immutable release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.2.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v0.2.0 already published; refusing to overwrite release artifacts"
+          if gh release view v0.2.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.2.1 already published; refusing to overwrite release artifacts"
             exit 0
           fi
-          gh release create v0.2.0 release/backuphub_0.2.0_amd64.deb release/backuphub_0.2.0_amd64.deb.sha256 \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.2.0" \
-            --notes-file docs/releases/v0.2.0.md
+          gh release create v0.2.1 release/backuphub_0.2.1_amd64.deb release/backuphub_0.2.1_amd64.deb.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.2.1" \
+            --notes-file docs/releases/v0.2.1.md

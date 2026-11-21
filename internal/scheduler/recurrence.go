@@ -9,8 +9,7 @@ import (
 	"time"
 )
 
-// NextOccurrence computes calendar schedules in the named civil timezone. An
-// occurrence in a nonexistent spring-DST hour is skipped, not shifted silently.
+// NextOccurrence retains execution timing for schedules created before v0.2.1.
 func NextOccurrence(mode string, intervalMinutes int, daysOfWeek string, hour, minute int, timezone string, after time.Time) (time.Time, error) {
 	if mode == "interval" {
 		if intervalMinutes < 5 || intervalMinutes > 525600 {
@@ -41,17 +40,86 @@ func NextOccurrence(mode string, intervalMinutes int, daysOfWeek string, hour, m
 	}
 	return time.Time{}, errors.New("no upcoming occurrence")
 }
-func (s *Scheduler) nextRun(ctx context.Context, id string, completed time.Time, fallback time.Duration) (time.Time, error) {
-	var mode, days, zone string
-	var interval, hour, minute int
-	err := s.db.QueryRowContext(ctx, `SELECT p.mode,p.interval_minutes,p.days_of_week,p.hour,p.minute,p.timezone
- FROM schedule_entries e JOIN schedule_profiles p ON p.id=e.profile_id WHERE e.id=?`, id).
-		Scan(&mode, &interval, &days, &hour, &minute, &zone)
-	if errors.Is(err, sql.ErrNoRows) {
-		return completed.Add(fallback), nil
-	} // legacy jobs
+
+// NextAnchoredOccurrence calculates a stable recurrence independently of job
+// duration and manual invocations. Day-based periods use civil dates in the
+// configured timezone; minute/hour periods are fixed elapsed-time intervals.
+func NextAnchoredOccurrence(mode string, value int, unit, days string, hour, minute int, zoneName string, anchor, after time.Time) (time.Time, error) {
+	if anchor.IsZero() {
+		return time.Time{}, errors.New("missing first run")
+	}
+	zone, err := time.LoadLocation(zoneName)
 	if err != nil {
 		return time.Time{}, err
+	}
+	anchor = anchor.In(zone)
+	switch mode {
+	case "interval":
+		if value <= 0 {
+			return time.Time{}, errors.New("invalid interval")
+		}
+		if !after.After(anchor) {
+			return anchor.UTC(), nil
+		}
+		switch unit {
+		case "minutes", "hours":
+			duration := time.Duration(value) * time.Minute
+			if unit == "hours" {
+				duration = time.Duration(value) * time.Hour
+			}
+			elapsed := after.Sub(anchor)
+			next := anchor.Add((elapsed/duration + 1) * duration)
+			return next.UTC(), nil
+		case "days":
+			// Use calendar dates: seven days never slides by an hour across DST.
+			local := after.In(zone)
+			anchorDay := time.Date(anchor.Year(), anchor.Month(), anchor.Day(), 12, 0, 0, 0, time.UTC)
+			afterDay := time.Date(local.Year(), local.Month(), local.Day(), 12, 0, 0, 0, time.UTC)
+			elapsedDays := int(afterDay.Sub(anchorDay).Hours() / 24)
+			count := elapsedDays / value
+			if count < 0 {
+				count = 0
+			}
+			for steps := 0; steps < 4; steps++ {
+				candidate := time.Date(anchor.Year(), anchor.Month(), anchor.Day(), anchor.Hour(), anchor.Minute(), 0, 0, zone).AddDate(0, 0, count*value)
+				if candidate.Hour() != anchor.Hour() || candidate.Minute() != anchor.Minute() {
+					count++
+					continue
+				}
+				if candidate.After(after) {
+					return candidate.UTC(), nil
+				}
+				count++
+			}
+			return time.Time{}, errors.New("unable to find next day-based occurrence")
+		default:
+			return time.Time{}, errors.New("unsupported interval unit")
+		}
+	case "daily", "weekly":
+		lower := after
+		if lower.Before(anchor) {
+			lower = anchor.Add(-time.Nanosecond)
+		}
+		return NextOccurrence(mode, 0, days, hour, minute, zoneName, lower)
+	default:
+		return time.Time{}, errors.New("unsupported schedule mode")
+	}
+}
+func (s *Scheduler) nextRun(ctx context.Context, id string, completed time.Time, fallback time.Duration) (time.Time, error) {
+	var mode, days, zone, unit string
+	var interval, hour, minute, value int
+	var anchor int64
+	err := s.db.QueryRowContext(ctx, `SELECT p.mode,p.interval_minutes,p.days_of_week,p.hour,p.minute,p.timezone,p.start_at_unix,p.interval_unit,p.interval_value
+ FROM schedule_entries e JOIN schedule_profiles p ON p.id=e.profile_id WHERE e.id=?`, id).
+		Scan(&mode, &interval, &days, &hour, &minute, &zone, &anchor, &unit, &value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return completed.Add(fallback), nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	if anchor > 0 {
+		return NextAnchoredOccurrence(mode, value, unit, days, hour, minute, zone, time.Unix(anchor, 0), completed)
 	}
 	return NextOccurrence(mode, interval, days, hour, minute, zone, completed)
 }
