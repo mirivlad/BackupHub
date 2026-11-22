@@ -64,6 +64,10 @@ func (s *Service) Create(ctx context.Context, input CreateSource) (Source, error
 		return empty, err
 	}
 	settings := Settings{Host: input.Host, Share: input.Share, Path: input.Path, Username: input.Username, Database: input.Database, AuthMethod: input.AuthMethod}
+	if input.Kind == "local" {
+		// An unavailable source can be configured before its first mount.
+		settings.LocalMount, _ = localSourceMount(input.Path)
+	}
 	encoded, err := json.Marshal(settings)
 	if err != nil {
 		return empty, err

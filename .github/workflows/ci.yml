@@ -2,6 +2,7 @@ name: Go CI
 on:
   push:
     branches: [main]
+    tags: [v0.7.0]
   pull_request:
 permissions:
   contents: read
@@ -58,9 +59,21 @@ jobs:
       - name: Build production UI
         run: npm run build
 
+  resilience:
+    name: Backup fault recovery in isolated containers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.x'
+          cache: false
+      - name: Restic, TCP faults and exhausted volume
+        run: tests/resilience/run-connectors.sh
+
   deb:
     name: Debian package and install smoke test
-    needs: [go, restic, web]
+    needs: [go, restic, web, resilience]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -83,12 +96,12 @@ jobs:
           if file dist/backuphub | grep -q 'dynamically linked'; then echo 'DEB binary must not depend on the CI runner glibc'; exit 1; fi
       - name: Create and inspect .deb
         run: |
-          sh packaging/debian/build.sh 0.6.1
-          dpkg-deb -c dist/backuphub_0.6.1_amd64.deb | grep '/usr/share/backuphub/web/index.html'
-          dpkg-deb -c dist/backuphub_0.6.1_amd64.deb | grep '/lib/systemd/system/backuphub.service'
+          sh packaging/debian/build.sh 0.7.0
+          dpkg-deb -c dist/backuphub_0.7.0_amd64.deb | grep '/usr/share/backuphub/web/index.html'
+          dpkg-deb -c dist/backuphub_0.7.0_amd64.deb | grep '/lib/systemd/system/backuphub.service'
       - name: Install Debian package and test HTTPS service
         run: |
-          sudo apt-get install -y ./dist/backuphub_0.6.1_amd64.deb
+          sudo apt-get install -y ./dist/backuphub_0.7.0_amd64.deb
           # postinst starts the daemon and initializes Restic; do not interrupt it.
           ready=false
           for i in $(seq 1 30); do
@@ -347,7 +360,7 @@ jobs:
 
   publish:
     name: Publish GitHub release after acceptance checks
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/tags/v0.7.0'
     needs: [deb]
     permissions:
       contents: write
@@ -361,15 +374,15 @@ jobs:
       - name: Verify SHA256 of built Debian artifact
         run: |
           cd release
-          sha256sum -c backuphub_0.6.1_amd64.deb.sha256
+          sha256sum -c backuphub_0.7.0_amd64.deb.sha256
       - name: Publish immutable release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.6.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v0.6.1 already published; refusing to overwrite release artifacts"
+          if gh release view v0.7.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.7.0 already published; refusing to overwrite release artifacts"
             exit 0
           fi
-          gh release create v0.6.1 release/backuphub_0.6.1_amd64.deb release/backuphub_0.6.1_amd64.deb.sha256 \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.6.1" \
-            --notes-file docs/releases/v0.6.1.md
+          gh release create v0.7.0 release/backuphub_0.7.0_amd64.deb release/backuphub_0.7.0_amd64.deb.sha256 \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "BackupHub v0.7.0" \
+            --notes-file docs/releases/v0.7.0.md

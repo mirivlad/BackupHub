@@ -82,6 +82,7 @@ func TestV4ToV5PreservesBackupScheduleDestination(t *testing.T){
  if err!=nil{t.Fatal(err)}
  _,err=c.DB.Exec("INSERT INTO schedule_entries(id,dataset_id,kind,interval_seconds,next_run_unix,enabled,created_at) VALUES('schedule-v4','source-v4','backup',3600,100,1,'2026-11-01T00:00:00Z')")
  if err!=nil{t.Fatal(err)}
+ removeBackupQueueSchema(t,c.DB)
  if _,err=c.DB.Exec("DROP TABLE system_settings");err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("DROP TABLE schedule_repositories");err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("DROP TABLE verification_runs");err!=nil{t.Fatal(err)}
@@ -102,6 +103,7 @@ func TestV5ToV6DefaultsExistingRepositoriesToProtected(t *testing.T){
  c,err:=Open(dir);if err!=nil{t.Fatal(err)}
  _,err=c.DB.Exec("INSERT INTO storage_repositories(id,display_name,path,created_at) VALUES('external','old disk','/mnt/old','2026-11-01')")
  if err!=nil{t.Fatal(err)}
+ removeBackupQueueSchema(t,c.DB)
  if _,err=c.DB.Exec("DROP TABLE system_settings");err!=nil{t.Fatal(err)}
  // SQLite cannot remove a column on all supported versions; rebuild
  // precisely the v5 table with its existing data before re-applying v6.
@@ -125,4 +127,20 @@ func TestV5ToV6DefaultsExistingRepositoriesToProtected(t *testing.T){
  if err=upgraded.DB.QueryRow("SELECT COUNT(*) FROM storage_repositories WHERE password_mode='password'").Scan(&count);err!=nil||count!=2{t.Fatalf("legacy encrypted repos changed: %d %v",count,err)}
  var mode string
  if err=upgraded.DB.QueryRow("SELECT default_repository_password_mode FROM system_settings WHERE singleton=1").Scan(&mode);err!=nil||mode!="password"{t.Fatalf("unsafe default after upgrade: %q %v",mode,err)}
+}
+
+func removeBackupQueueSchema(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, statement := range []string{
+		"DROP TABLE backup_publications", "DROP TABLE backup_staging", "DROP INDEX schedule_runs_attempt",
+		"ALTER TABLE schedule_runs DROP COLUMN operation_id", "ALTER TABLE schedule_runs DROP COLUMN attempt",
+		"ALTER TABLE schedule_runs DROP COLUMN failure_stage", "ALTER TABLE schedule_runs DROP COLUMN failure_detail",
+		"ALTER TABLE schedule_runs DROP COLUMN next_retry_unix", "DROP TABLE backup_operations",
+		"ALTER TABLE schedule_entries DROP COLUMN retry_count", "ALTER TABLE schedule_entries DROP COLUMN retry_interval_minutes",
+		"ALTER TABLE schedule_entries DROP COLUMN manual_queued_unix",
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

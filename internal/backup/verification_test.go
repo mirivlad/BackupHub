@@ -230,6 +230,12 @@ func TestVerificationRestartAndV12Migration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, sql := range []string{
+		"DROP TABLE backup_publications", "DROP TABLE backup_staging", "DROP INDEX schedule_runs_attempt",
+		"ALTER TABLE schedule_runs DROP COLUMN operation_id", "ALTER TABLE schedule_runs DROP COLUMN attempt",
+		"ALTER TABLE schedule_runs DROP COLUMN failure_stage", "ALTER TABLE schedule_runs DROP COLUMN failure_detail",
+		"ALTER TABLE schedule_runs DROP COLUMN next_retry_unix", "DROP TABLE backup_operations",
+		"ALTER TABLE schedule_entries DROP COLUMN retry_count", "ALTER TABLE schedule_entries DROP COLUMN retry_interval_minutes",
+		"ALTER TABLE schedule_entries DROP COLUMN manual_queued_unix",
 		"DROP TABLE verification_runs", "DROP TABLE repository_check_schedules", "PRAGMA user_version=12",
 	} {
 		if _, err := s.catalog.DB.Exec(sql); err != nil {

@@ -106,10 +106,16 @@ func NextAnchoredOccurrence(mode string, value int, unit, days string, hour, min
 	}
 }
 func (s *Scheduler) nextRun(ctx context.Context, id string, completed time.Time, fallback time.Duration) (time.Time, error) {
+	return nextRun(ctx, s.db, id, completed, fallback)
+}
+
+func nextRun(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, id string, completed time.Time, fallback time.Duration) (time.Time, error) {
 	var mode, days, zone, unit, cronExpression string
 	var interval, hour, minute, value int
 	var anchor int64
-	err := s.db.QueryRowContext(ctx, `SELECT CASE WHEN p.cron_expression<>'' THEN 'cron' ELSE p.mode END,p.interval_minutes,p.days_of_week,p.hour,p.minute,p.timezone,p.start_at_unix,p.interval_unit,p.interval_value,p.cron_expression
+	err := db.QueryRowContext(ctx, `SELECT CASE WHEN p.cron_expression<>'' THEN 'cron' ELSE p.mode END,p.interval_minutes,p.days_of_week,p.hour,p.minute,p.timezone,p.start_at_unix,p.interval_unit,p.interval_value,p.cron_expression
  FROM schedule_entries e JOIN schedule_profiles p ON p.id=e.profile_id WHERE e.id=?`, id).
 		Scan(&mode, &interval, &days, &hour, &minute, &zone, &anchor, &unit, &value, &cronExpression)
 	if errors.Is(err, sql.ErrNoRows) {

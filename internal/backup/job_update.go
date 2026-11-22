@@ -46,21 +46,28 @@ func (s *Service) UpdateJob(ctx context.Context, id string, in CreateBackupJob) 
 		return empty, err
 	}
 	defer tx.Rollback()
-	var enabled, manualPending int
+	var enabled, manualPending, retries, step int
+	var operationActive bool
 	var active, oldProfile sql.NullString
 	var oldNext int64
-	err = tx.QueryRowContext(ctx, "SELECT enabled,active_run_id,profile_id,next_run_unix,manual_pending FROM schedule_entries WHERE id=?", id).Scan(&enabled, &active, &oldProfile, &oldNext, &manualPending)
+	err = tx.QueryRowContext(ctx, `SELECT enabled,active_run_id,profile_id,next_run_unix,manual_pending,retry_count,retry_interval_minutes,
+		EXISTS(SELECT 1 FROM backup_operations WHERE schedule_id=e.id AND state IN ('running','waiting'))
+		FROM schedule_entries e WHERE id=?`, id).Scan(&enabled, &active, &oldProfile, &oldNext, &manualPending, &retries, &step, &operationActive)
 	if err != nil {
 		return empty, err
 	}
 	if active.Valid {
 		return empty, errors.New("cannot edit a running backup job")
 	}
-	if manualPending != 0 {
+	if manualPending != 0 || operationActive {
 		return empty, errors.New("cannot edit a queued backup job")
 	}
 	if enabled != 0 && oldNext <= now.Unix() {
 		return empty, errors.New("cannot edit an already queued job; let it finish first")
+	}
+	retries, step, err = in.retrySettings(retries, step)
+	if err != nil {
+		return empty, err
 	}
 	created := now.Format(time.RFC3339Nano)
 	_, err = tx.ExecContext(ctx, `INSERT INTO schedule_profiles(id,name,mode,interval_minutes,days_of_week,hour,minute,timezone,created_at,start_at_unix,interval_unit,interval_value,cron_expression)
@@ -69,8 +76,8 @@ func (s *Service) UpdateJob(ctx context.Context, id string, in CreateBackupJob) 
 		_, err = tx.ExecContext(ctx, "UPDATE jobs SET dataset_id=? WHERE id=?", in.SourceID, id)
 	}
 	if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE schedule_entries SET dataset_id=?,display_name=?,profile_id=?,interval_seconds=?,next_run_unix=? WHERE id=? AND active_run_id IS NULL`,
-			in.SourceID, name, newProfileID, profileInterval(p, minutes), next.Unix(), id)
+		_, err = tx.ExecContext(ctx, `UPDATE schedule_entries SET dataset_id=?,display_name=?,profile_id=?,interval_seconds=?,next_run_unix=?,retry_count=?,retry_interval_minutes=? WHERE id=? AND active_run_id IS NULL`,
+			in.SourceID, name, newProfileID, profileInterval(p, minutes), next.Unix(), retries, step, id)
 	}
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `INSERT INTO schedule_repositories(schedule_id,repository_id) VALUES(?,?)
@@ -86,5 +93,5 @@ func (s *Service) UpdateJob(ctx context.Context, id string, in CreateBackupJob) 
 		return empty, fmt.Errorf("update job: %w", err)
 	}
 	s.notify()
-	return BackupJob{ID: id, Name: name, SourceID: in.SourceID, SourceName: sourceName, RepositoryID: in.RepositoryID, Schedule: p, Enabled: enabled != 0, NextRun: next.Format(time.RFC3339)}, nil
+	return BackupJob{ID: id, Name: name, SourceID: in.SourceID, SourceName: sourceName, RepositoryID: in.RepositoryID, Schedule: p, Enabled: enabled != 0, RetryCount: retries, RetryIntervalMinutes: step, NextRun: next.Format(time.RFC3339)}, nil
 }

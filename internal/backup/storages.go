@@ -138,7 +138,7 @@ func (s *Service) repositoryFor(ctx context.Context, id string) (*repository, er
 		return nil, errors.New("unknown repository password mode")
 	}
 	if mountPath != "" && !storagehelper.MountPresent(mountPath) {
-		return nil, errors.New("storage volume not mounted")
+		return nil, errStorageUnavailable
 	}
 	if path == s.repo.path {
 		return nil, errors.New("repository overlaps primary storage")
@@ -304,7 +304,8 @@ func (s *Service) SelectJobStorage(ctx context.Context, jobID, storageID string)
 	// Don't switch the destination while an execution is underway.
 	result, err := s.catalog.DB.ExecContext(ctx, `UPDATE schedule_repositories SET repository_id=?
  WHERE schedule_id=? AND EXISTS(
- SELECT 1 FROM schedule_entries WHERE id=? AND active_run_id IS NULL
+ SELECT 1 FROM schedule_entries WHERE id=? AND active_run_id IS NULL AND NOT EXISTS (
+ SELECT 1 FROM backup_operations WHERE schedule_id=schedule_entries.id AND state IN ('running','waiting'))
  )`, storageID, jobID, jobID)
 	if err != nil {
 		return err

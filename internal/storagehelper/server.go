@@ -52,6 +52,20 @@ func MountPresent(mountPath string)bool{
  }
  return false
 }
+// ContainingMount returns the deepest visible mount for a literal path.
+func ContainingMount(path string) (string, error) {
+ data,err:=os.ReadFile("/proc/self/mountinfo")
+ if err!=nil{return "",err}
+ mount:="/"
+ for _,line:=range strings.Split(string(data),"\n"){
+  fields:=strings.Fields(strings.SplitN(line," - ",2)[0])
+  if len(fields)<5{continue}
+  candidate:=decodeMountPath(fields[4])
+  if len(candidate)>len(mount)&&within(path,candidate){mount=candidate}
+ }
+ return mount,nil
+}
+
 func (h *Handler) mounts()([]Mount,error){
  b,err:=os.ReadFile(h.mountinfo)
  if err!=nil{return nil,err}

@@ -107,14 +107,22 @@ func (s *Service) connectSSH(ctx context.Context, sourceID string, settings Sett
 	if err != nil {
 		return nil, err
 	}
+	connect, cancel := context.WithTimeout(ctx, connectTimeout(ctx))
+	defer cancel()
 	config := &ssh.ClientConfig{
-		User: settings.Username, Auth: auth, HostKeyCallback: s.sshHostKeyCallback(ctx, sourceID, address), Timeout: 15 * time.Second,
+		User: settings.Username, Auth: auth, HostKeyCallback: s.sshHostKeyCallback(connect, sourceID, address),
 	}
-	socket, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", address)
+	socket, err := (&net.Dialer{}).DialContext(connect, "tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("SSH connection failed: %w", err)
 	}
+	stop := context.AfterFunc(connect, func() { _ = socket.Close() })
 	sshConn, chans, requests, err := ssh.NewClientConn(socket, address, config)
+	stop()
+	if connect.Err() != nil {
+		_ = socket.Close()
+		return nil, connect.Err()
+	}
 	if err != nil {
 		_ = socket.Close()
 		return nil, fmt.Errorf("SSH authentication or trusted host key check failed: %w", err)

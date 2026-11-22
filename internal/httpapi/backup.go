@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/mirivlad/BackupHub/internal/backup"
+	"github.com/mirivlad/BackupHub/internal/scheduler"
 )
 
 // backupAPI keeps all source/restore information behind session authentication.
@@ -53,6 +54,10 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(err, backup.ErrJobAlreadyRunning) {
 			jsonResponse(w, http.StatusConflict, map[string]string{"error": "Задание уже выполняется или ожидает запуска. Повторный запуск невозможен до завершения."})
+			return
+		}
+		if errors.Is(err, scheduler.ErrNoPendingRetry) {
+			jsonResponse(w, http.StatusConflict, map[string]string{"error": "У операции больше нет доступного ожидающего повтора."})
 			return
 		}
 		if errors.Is(err, backup.ErrJobPaused) {
@@ -274,6 +279,19 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			}
 			s.backup.Audit(r.Context(), user.ID, "backup.queued", id)
 			jsonResponse(w, 202, map[string]any{"queued": true, "job_id": id})
+		case "retry", "cancel-retry":
+			var input struct {
+				OperationID string `json:"operation_id"`
+			}
+			if !decode(w, r, &input) {
+				return
+			}
+			if err := s.backup.ChangeRetry(r.Context(), id, input.OperationID, action == "cancel-retry"); err != nil {
+				fail(err)
+				return
+			}
+			s.backup.Audit(r.Context(), user.ID, "backup."+action, input.OperationID)
+			jsonResponse(w, 200, map[string]string{"operation_id": input.OperationID})
 		case "pause", "resume":
 			if !isAdmin {
 				jsonResponse(w, 403, map[string]string{"error": "admin required"})
@@ -533,7 +551,7 @@ func publicError(err error) string {
 		return "Для хранения без пароля нужен Restic версии 0.17.0 или новее"
 	}
 	msg := err.Error()
-	for _, safe := range []string{"неизвестный режим проверки хранилища", "выберите режим проверки и период", "invalid cron rule", "unknown schedule timezone", "invalid schedule timezone", "invalid first run", "first run date and time required", "invalid interval", "invalid scheduling mode", "invalid weekdays", "choose weekdays", "choose minutes", "source not found", "cannot edit", "invalid source name", "unsupported source type", "local source overlaps", "local source must be", "source overlaps", "SMB host", "SFTP host", "SFTP password", "PostgreSQL host", "invalid source or storage", "invalid job name", "destination storage unavailable"} {
+	for _, safe := range []string{"неизвестный режим проверки хранилища", "выберите режим проверки и период", "invalid cron rule", "unknown schedule timezone", "invalid schedule timezone", "invalid first run", "first run date and time required", "invalid interval", "invalid scheduling mode", "invalid weekdays", "choose weekdays", "choose minutes", "source not found", "cannot edit", "invalid source name", "unsupported source type", "local source overlaps", "local source must be", "source overlaps", "SMB host", "SFTP host", "SFTP password", "PostgreSQL host", "invalid source or storage", "invalid job name", "retry count must", "retry interval must", "destination storage unavailable"} {
 		if strings.HasPrefix(msg, safe) {
 			if strings.HasPrefix(msg, "invalid cron rule") {
 				return "Некорректное правило расписания: проверьте выбор минут, часов и дней"

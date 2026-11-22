@@ -166,7 +166,7 @@ func (r *repository) readStream(ctx context.Context, consume func(io.Reader) err
 	if err = cmd.Start(); err != nil {
 		return err
 	}
-	readErr := consume(pipe)
+	readErr := consume(progressReader{ctx, pipe})
 	if readErr != nil {
 		cancel()
 	}

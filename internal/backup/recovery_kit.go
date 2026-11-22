@@ -168,7 +168,8 @@ func prepareRecoveredCatalog(ctx context.Context, staging string, manifest recov
 		return err
 	}
 	for _, statement := range []string{
-		"UPDATE schedule_entries SET enabled=0, manual_pending=0",
+		"UPDATE schedule_entries SET enabled=0, manual_pending=0, manual_queued_unix=NULL",
+		"DELETE FROM backup_staging",
 		"UPDATE repository_check_schedules SET next_run=NULL",
 		"DELETE FROM sessions",
 		"DELETE FROM bootstrap",

@@ -55,6 +55,7 @@ func copyFile(ctx context.Context, target string, src io.Reader, mode os.FileMod
 				if _, err := file.Write(buf[:n]); err != nil {
 					return err
 				}
+				noteProgress(ctx)
 			}
 			if errors.Is(readErr, io.EOF) {
 				return nil
@@ -95,20 +96,32 @@ func copyFile(ctx context.Context, target string, src io.Reader, mode os.FileMod
 }
 
 func captureSMB(ctx context.Context, c Settings, password, target string) error {
-	dialer := &smb2.Dialer{Credentials: smbauth.NTLMCredential{User: c.Username, Password: password}, RequireMessageSigning: true}
-	session, err := dialer.Dial(ctx, c.Host)
+	dialCtx, cancelDial := context.WithTimeout(ctx, connectTimeout(ctx))
+	if c.Host == "" {
+		cancelDial()
+		return errors.New("missing SMB host")
+	}
+	dialer := &smb2.Dialer{
+		Credentials:           smbauth.NTLMCredential{User: c.Username, Password: password},
+		RequireMessageSigning: true,
+		TransportDialer:       smbProgressDialer{ctx},
+	}
+	session, err := dialer.Dial(dialCtx, c.Host)
+	cancelDial()
 	if err != nil {
 		if trySMB1(ctx, c.Host, err) {
 			return captureSMB1(ctx, c, password, target)
 		}
 		return fmt.Errorf("SMB connection failed: %w", err)
 	}
-	defer session.Close()
+	defer session.Abort()
+	stop := context.AfterFunc(ctx, func() { _ = session.Abort() })
+	defer stop()
 	share, err := session.Mount(ctx, c.Share)
 	if err != nil {
 		return fmt.Errorf("SMB share mount failed: %w", err)
 	}
-	defer share.Unmount(context.Background())
+	defer share.Unmount(ctx)
 	remote := strings.Trim(strings.ReplaceAll(c.Path, "\\", "/"), "/")
 	if remote == "" {
 		remote = "."
@@ -129,6 +142,7 @@ func captureSMB(ctx context.Context, c Settings, password, target string) error 
 		if walkErr != nil {
 			return walkErr
 		}
+		noteProgress(ctx)
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -187,7 +201,27 @@ func (s *Service) captureSFTP(ctx context.Context, sourceID string, c Settings, 
 		return err
 	}
 	defer client.Close()
-	remote, err := sftp.NewClient(client)
+	noteProgress(ctx)
+	stop := context.AfterFunc(ctx, func() { _ = client.Close() })
+	defer stop()
+	session, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+	input, err := session.StdinPipe()
+	if err != nil {
+		return err
+	}
+	output, err := session.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err = session.RequestSubsystem("sftp"); err != nil {
+		return err
+	}
+	// Watch SFTP payload. SSH keepalives must not extend a stalled transfer.
+	remote, err := sftp.NewClientPipe(progressReader{ctx, output}, input)
 	if err != nil {
 		return err
 	}
@@ -213,6 +247,7 @@ func (s *Service) captureSFTP(ctx context.Context, sourceID string, c Settings, 
 		if err != nil {
 			return err
 		}
+		noteProgress(ctx)
 		for _, info := range entries {
 			name := info.Name()
 			if name == "." || name == ".." || strings.Contains(name, "/") {
@@ -286,20 +321,37 @@ func capturePostgres(ctx context.Context, c Settings, password, target string) e
 	}
 	output := filepath.Join(target, "database.dump")
 	// No shell, no user-supplied flags, no password on the command line.
-	cmd := exec.CommandContext(ctx, pgDump, "--host", host, "--port", port, "--username", c.Username, "--dbname", c.Database, "--format=custom", "--no-owner", "--no-acl", "--file", output)
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "LANG=C", "PGPASSWORD=" + password, "PGCONNECT_TIMEOUT=15"}
+	cmd := operationCommand(ctx, nil, pgDump, "--no-password", "--lock-wait-timeout="+connectSeconds(ctx)+"s", "--host", host, "--port", port, "--username", c.Username, "--dbname", c.Database, "--format=custom", "--no-owner", "--no-acl", "--file", output)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "LANG=C", "PGPASSWORD=" + password, "PGCONNECT_TIMEOUT=" + connectSeconds(ctx)}
 	var stderr boundedOutput
 	stderr.max = 4096
 	cmd.Stderr = &stderr
-	if err = cmd.Run(); err != nil {
+	stop := watchFileProgress(ctx, output)
+	err = cmd.Run()
+	stop()
+	if err != nil {
 		return fmt.Errorf("pg_dump failed: %w: %s", err, stderr.String())
 	}
 	// A valid TOC is not proof of a successful application restore, but detects
 	// a truncated or invalid custom-format dump before a restic commit.
-	check := exec.CommandContext(ctx, pgRestore, "--list", output)
+	noteProgress(ctx)
+	check := operationCommand(ctx, nil, pgRestore, "--list", output)
 	check.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "LANG=C"}
 	if err = check.Run(); err != nil {
 		return fmt.Errorf("pg_restore TOC validation failed: %w", err)
 	}
 	return nil
+}
+
+type smbProgressDialer struct{ ctx context.Context }
+
+func (d smbProgressDialer) Dial(ctx context.Context, server string) (smb2.Transport, error) {
+	if _, _, err := net.SplitHostPort(server); err != nil {
+		server = net.JoinHostPort(server, "445")
+	}
+	socket, err := (&net.Dialer{}).DialContext(ctx, "tcp", server)
+	if err != nil {
+		return nil, err
+	}
+	return smb2.NewTransport(progressConn{socket, d.ctx}), nil
 }

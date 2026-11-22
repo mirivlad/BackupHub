@@ -151,6 +151,13 @@ func (s *Service) UpdateSource(ctx context.Context, id string, in CreateSource) 
 		}
 	}
 	settings := Settings{Host: in.Host, Share: in.Share, Path: in.Path, Username: in.Username, Database: in.Database, AuthMethod: in.AuthMethod}
+	if in.Kind == "local" {
+		if old.Kind == "local" && in.Path == oldSettings.Path && oldSettings.LocalMount != "" {
+			settings.LocalMount = oldSettings.LocalMount
+		} else {
+			settings.LocalMount, _ = localSourceMount(in.Path)
+		}
+	}
 	encoded, err := json.Marshal(settings)
 	if err != nil {
 		cleanup()
@@ -163,7 +170,9 @@ func (s *Service) UpdateSource(ctx context.Context, id string, in CreateSource) 
 	}
 	defer tx.Rollback()
 	var running int
-	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM schedule_entries WHERE dataset_id=? AND active_run_id IS NOT NULL", id).Scan(&running); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schedule_entries e WHERE dataset_id=? AND (active_run_id IS NOT NULL OR EXISTS (
+			SELECT 1 FROM backup_operations o JOIN backup_publications p ON p.operation_id=o.id
+			WHERE o.schedule_id=e.id AND o.state='waiting'))`, id).Scan(&running); err != nil {
 		cleanup()
 		return empty, err
 	}

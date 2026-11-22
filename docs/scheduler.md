@@ -1,25 +1,23 @@
-# Scheduler: durable execution ledger
+# Очередь резервного копирования
 
-BackupHub starts the scheduler with the service. Each backup job owns its interval or cron configuration, first occurrence and time zone. Manual requests queue a run and preserve an upcoming planned occurrence.
+В каждом задании хранятся своё расписание, часовой пояс, количество повторов и шаг интервала. Ручной запуск сохраняет ближайшее плановое время и имеет собственную отметку времени в журнале.
 
-## Model
+## Правила повторов
 
-- `schedule_entries` — typed jobs `backup`, `verify`, `replicate`, a dataset, enabled flag, interval (60 seconds to one year), next due UTC timestamp and an active run ID.
-- `schedule_runs` — durable per-run ID, phase, start/finish times, non-secret error code.
-- `Scheduler.Add(ctx,Task)` — explicit interval schedule. No arbitrary Bash/PowerShell job type.
-- `Scheduler.RunDue(ctx)` — atomically claims at most one due task, then invokes a registered, trusted Go executor. A second poll of that task cannot overlap.
-- `Executor.Execute(ctx,task,report)` — reports legal domain job-phase transitions. Return success is accepted **only after** `verifying`; skipping phases cannot produce a false green job.
-- `RecoverInterrupted(ctx)` — marks unfinalized work `interrupted`, unlocks schedules and allows one catch-up execution. It does not replay every missed interval at boot.
-- `RecentRuns` — paged read-only history, no plaintext passwords or raw application output.
+- По умолчанию допускаются три повтора. Их задержки составляют 30, 60 и 90 минут после завершения предыдущей неудачной попытки. Для повтора номер N задержка равна N × шаг. Ноль отключает автоматические повторы.
+- Временная недоступность источника или хранилища, обрыв сети, тайм-аут и исчерпание места расходуют бюджет текущей операции. Неверные учётные данные, несовместимая конфигурация, повреждение Restic и конфликт блокировки требуют устранения причины.
+- Задание имеет одну активную операцию. Пока она ожидает повтор, календарные события объединяются. При завершении операции планировщик сохраняет ближайшее будущее время обычного запуска.
+- После исчерпания лимита журнал сохраняет `retry_exhausted` и причину последней попытки. Следующее плановое время или ручной запуск создают новую операцию со своим бюджетом.
+- Администратор и оператор резервного копирования могут ускорить либо отменить ожидающий повтор. Действие привязано к ID операции. Пауза задания приостанавливает его допуск в очередь.
 
-When preflight returns `ErrSourceUnavailable` during a planned run, a task records `waiting_for_source` and retries after the smaller of its normal interval and five minutes. A manual request preserves a planned occurrence that is still in the future. Other failures remain failed with a later scheduled opportunity.
+## Допуск к выполнению
 
-## Crash and concurrency guarantees
+При запуске служба получает файловую блокировку каталога. SQLite атомарно сохраняет операцию и её попытку вместе с захватом задания. Две задачи могут выполняться параллельно, если им нужны разные хранилища. Операции проверки также учитывают занятость репозитория.
 
-The due-task claim and new-run creation are one SQLite transaction; the active run ID prevents overlap even when polls race. Phase changes are persisted before continuing. The final state and next run are committed together. On restart, an explicit `RecoverInterrupted` reconciles abandoned active runs and avoids false successes.
+Обычная заявка получает ключ очереди по моменту планового запуска или ручной заявки. Повтор получает ключ по времени готовности плюс 10 минут. Задания, ожидавшие к моменту готовности повтора, сохраняют приоритет. Новые заявки с временем позже ключа повтора пропускают его вперёд. Диспетчер пропускает занятые хранилища, пока обслуживает доступные. Он пробуждается по времени ближайшего допуска, изменению очереди и освобождению ресурса. Ожидающий повтор освобождает исполнитель и резервирование хранилища.
 
-The service processes one backup at a time. Each backup reads its new snapshot before publishing it. Repository-wide checks use an independent queue and reserve only the target repository. Repository admission occurs before the transaction claims a due backup. An occupied repository leaves its due time and manual flag intact. The scheduler can claim a job for a different repository, and repository release wakes the backup dispatcher. The existing task transaction and repository admission gate also support multiple workers bounded by a future dispatcher. Production currently runs one backup worker. See the [verification runbook](verification.md). Each catalog supports one running instance. Recovered state pauses restored schedules until the operator enables them.
+## Аварийное завершение
 
-## Tests
+SQLite сохраняет стадию до перехода к следующей операции. При перезапуске открытая попытка остаётся в истории со статусом `interrupted`. Её номер и исходное расписание сохраняются. При прерывании публикации служба сначала ищет переносимый манифест с ID операции. Проведённая проверка и запись в каталог позволяют завершить операцию с существующим снимком. Проверка манифеста использует прежнюю попытку и не расходует дополнительный повтор.
 
-Tests cover successful phases and history, two concurrent polls against the same due job, interrupted-run recovery, offline sources, errors and attempted success without required phases. SQLite migration v2→v3 is exercised with repository CI. No test uses a fake executor to claim an actual backup was performed.
+Автоматической очистки блокировок Restic нет. Детали отказов, параметры тайм-аутов и результаты испытаний см. в [отчёте об отказоустойчивости](backup-resilience.md).

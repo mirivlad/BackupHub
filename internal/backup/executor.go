@@ -3,19 +3,28 @@ package backup
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/mirivlad/BackupHub/internal/domain"
 	"github.com/mirivlad/BackupHub/internal/scheduler"
+	"github.com/mirivlad/BackupHub/internal/storagehelper"
 )
 
-func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(domain.JobState) error) error {
+func (s *Service) Execute(parent context.Context, t scheduler.Task, report func(domain.JobState) error) error {
+	ctx, stop := s.watchOperation(parent)
+	defer stop()
+	reportPhase := report
+	report = func(state domain.JobState) error {
+		noteProgress(ctx)
+		return reportPhase(state)
+	}
 	started := t.StartedAt
 	if started.IsZero() {
 		started = time.Now()
@@ -33,18 +42,43 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	}
 	destination, err := s.repositoryFor(ctx, repoID)
 	if err != nil {
-		return &scheduler.BackupFailure{Code: "storage_unavailable", Err: errors.Join(scheduler.ErrSourceUnavailable, err)}
+		return storageFailure(ctx, err)
+	}
+	pending, err := s.loadPublication(ctx, t)
+	if err != nil {
+		return err
+	}
+	if pending.runID != "" {
+		return s.resumePublication(ctx, t, destination, pending, report)
 	}
 	if source.Kind == "local" {
 		status, _ := assessLocalAccess(settings.Path)
 		switch status {
 		case "ok":
+			if settings.LocalMount == "" {
+				settings.LocalMount, err = localSourceMount(settings.Path)
+				if err != nil {
+					return sourceFailure(ctx, err)
+				}
+				encoded, encodeErr := json.Marshal(settings)
+				if encodeErr != nil {
+					return encodeErr
+				}
+				if _, err = s.catalog.DB.ExecContext(ctx, `UPDATE sources SET settings_json=? WHERE id=?`, string(encoded), source.ID); err != nil {
+					return backupFailure(ctx, "snapshot_catalog_failed", err)
+				}
+			}
+			if err = checkLocalMount(ctx, settings); err != nil {
+				return err
+			}
 		case "missing":
 			return fmt.Errorf("%w: local directory not found or hidden: %s", scheduler.ErrSourceUnavailable, settings.Path)
 		case "denied":
 			return fmt.Errorf("%w: backuphub cannot read local directory: %s", scheduler.ErrSourcePermissionDenied, settings.Path)
+		case "error":
+			return fmt.Errorf("%w: local directory could not be opened: %s", scheduler.ErrSourceUnavailable, settings.Path)
 		default:
-			return errors.New("local source is not a readable directory")
+			return sourceFailure(ctx, errors.New("local source is not a readable directory"))
 		}
 	}
 	if err = report(domain.JobPreparing); err != nil {
@@ -54,7 +88,7 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if ref != "" {
 		data, err := s.vault.Get(ctx, ref)
 		if err != nil {
-			return err
+			return backupFailure(ctx, "source_configuration", err)
 		}
 		password = string(data)
 		for i := range data {
@@ -69,10 +103,19 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 		// Stage remote trees on the SELECTED backup volume, not on the OS disk.
 		staging = filepath.Join(filepath.Dir(destination.path), "staging")
 	}
-	root, cleanup, err := s.capture(ctx, source.ID, source.Kind, settings, password, staging)
+	if source.Kind != "local" {
+		if err = s.cleanInterruptedStaging(ctx, staging); err != nil {
+			return backupFailure(ctx, "snapshot_catalog_failed", err)
+		}
+	}
+	root, cleanup, err := s.capture(ctx, t.RunID, source.ID, source.Kind, settings, password, staging)
 	password = ""
 	if err != nil {
-		return &scheduler.BackupFailure{Code: "capture_failed", Err: err}
+		var failure *scheduler.BackupFailure
+		if errors.As(err, &failure) {
+			return err
+		}
+		return sourceFailure(ctx, err)
 	}
 	defer cleanup()
 	if err = report(domain.JobCommitting); err != nil {
@@ -85,7 +128,20 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
 			code = "restic_partial_backup"
 		}
-		return resticStageFailure(code, err)
+		if source.Kind == "local" && ctx.Err() == nil {
+			if mountErr := checkLocalMount(ctx, settings); mountErr != nil {
+				return mountErr
+			}
+			if status, _ := assessLocalAccess(settings.Path); status == "missing" {
+				return fmt.Errorf("%w: local source disappeared during backup", scheduler.ErrSourceUnavailable)
+			}
+		}
+		return s.resticFailure(ctx, t.RepositoryID, code, err)
+	}
+	if source.Kind == "local" {
+		if err = checkLocalMount(ctx, settings); err != nil {
+			return err
+		}
 	}
 	// Read back the new snapshot before publishing it in the catalog.
 	if err = report(domain.JobVerifying); err != nil {
@@ -96,11 +152,7 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 			slog.WarnContext(ctx, "restic snapshot verification failed", "run_id", t.RunID,
 				"job_id", t.ID, "repository_id", repoID, "detail", err)
 		}
-		return resticStageFailure("restic_verification_failed", err)
-	}
-	id, err := randomID()
-	if err != nil {
-		return err
+		return s.resticFailure(ctx, t.RepositoryID, "restic_verification_failed", err)
 	}
 	captured := time.Now()
 	at := captured.UTC().Format(time.RFC3339Nano)
@@ -118,31 +170,30 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if source.Kind == "smb" || source.Kind == smb1Kind {
 		fidelity = "content_and_timestamps"
 	}
-	marker := portableRecord{ID: id, SourceID: source.ID, SourceName: source.Name, Kind: source.Kind, Root: root, ResticID: native, At: at, DataVerified: true, Consistency: consistency, Fidelity: fidelity, CaptureDurationMS: &duration}
-	markerID, err := destination.commit(ctx, marker)
-	if err != nil {
-		return resticStageFailure("restic_manifest_failed", err)
+	marker := portableRecord{Format: portableTreeFormat, ID: t.OperationID, AttemptID: t.RunID, SourceID: source.ID, SourceName: source.Name, Kind: source.Kind, Root: root, ResticID: native, At: at, DataVerified: true, Consistency: consistency, Fidelity: fidelity, CaptureDurationMS: &duration}
+	if err = s.savePublication(ctx, t, marker); err != nil {
+		return err
 	}
-	tx, err := s.catalog.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return &scheduler.BackupFailure{Code: "snapshot_catalog_failed", Err: err}
-	}
-	defer tx.Rollback()
-	if err = insertCommittedTree(ctx, tx, repoID, markerID, t.RunID, marker); err != nil {
-		return &scheduler.BackupFailure{Code: "snapshot_catalog_failed", Err: err}
-	}
-	if err = tx.Commit(); err != nil {
-		return &scheduler.BackupFailure{Code: "snapshot_catalog_failed", Err: err}
-	}
-	return nil
+	return s.publish(ctx, t, destination, marker, report, false)
 }
 
-func resticStageFailure(code string, err error) *scheduler.BackupFailure {
-	err = resticLockError(err)
-	if errors.Is(err, errResticRepositoryLocked) {
-		code = "restic_repository_locked"
+func localSourceMount(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
 	}
-	return &scheduler.BackupFailure{Code: code, Err: err}
+	return storagehelper.ContainingMount(resolved)
+}
+
+func checkLocalMount(ctx context.Context, settings Settings) error {
+	mount, err := localSourceMount(settings.Path)
+	if err != nil {
+		return sourceFailure(ctx, err)
+	}
+	if mount != settings.LocalMount {
+		return fmt.Errorf("%w: source mount changed", scheduler.ErrSourceUnavailable)
+	}
+	return nil
 }
 
 func insertCommittedTree(ctx context.Context, tx *sql.Tx, repoID, markerID, runID string, rec portableRecord) error {
@@ -155,29 +206,17 @@ func insertCommittedTree(ctx context.Context, tx *sql.Tx, repoID, markerID, runI
 		rec.ID, rec.SourceID, rec.ResticID, rec.Root, rec.At, "data_sha256_verified", rec.Fidelity, rec.Consistency, runID, rec.CaptureDurationMS)
 	return err
 }
-func (s *Service) capture(ctx context.Context, sourceID, kind string, settings Settings, password, staging string) (string, func(), error) {
+func (s *Service) capture(ctx context.Context, runID, sourceID, kind string, settings Settings, password, staging string) (string, func(), error) {
 	if kind == "local" {
 		return filepath.Clean(settings.Path), func() {}, nil
 	}
-	if err := os.MkdirAll(staging, 0700); err != nil {
-		return "", func() {}, err
-	}
-	info, err := os.Lstat(staging)
+	root, cleanup, err := s.newStaging(ctx, staging, runID)
 	if err != nil {
-		return "", func() {}, err
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
-		return "", func() {}, errors.New("staging directory must be private and real")
-	}
-	dir, err := os.MkdirTemp(staging, "capture-")
-	if err != nil {
-		return "", func() {}, err
-	}
-	cleanup := func() { _ = os.RemoveAll(dir) }
-	root := filepath.Join(dir, "tree")
-	if err = os.Mkdir(root, 0700); err != nil {
-		cleanup()
-		return "", func() {}, err
+		failure := storageFailure(ctx, err)
+		if errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT) {
+			failure.Code = "storage_full"
+		}
+		return "", nil, failure
 	}
 	switch kind {
 	case "smb", smb1Kind:

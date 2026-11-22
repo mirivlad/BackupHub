@@ -29,7 +29,10 @@ type CreateSource struct {
 	KeyPassphrase string `json:"key_passphrase,omitempty"`
 	Database      string `json:"database"`
 }
-type Settings struct{ Host, Share, Path, Username, Database, AuthMethod string }
+type Settings struct {
+	Host, Share, Path, Username, Database, AuthMethod string
+	LocalMount                                        string `json:",omitempty"`
+}
 type Source struct {
 	ID                 string `json:"id"`
 	Name               string `json:"name"`
@@ -80,9 +83,15 @@ type Service struct {
 	stopped          chan struct{}
 	once             sync.Once
 	startErr         error
+	timeouts         operationTimeouts
+	stagingCleanup   sync.Mutex
 }
 
 func New(ctx context.Context, c *catalog.Catalog, v *vault.Vault, repoPath, stageDir string) (*Service, error) {
+	timeouts, err := readOperationTimeouts()
+	if err != nil {
+		return nil, err
+	}
 	if stageDir == "" {
 		stageDir = filepath.Join(c.DataDir, "staging")
 	}
@@ -126,7 +135,7 @@ func New(ctx context.Context, c *catalog.Catalog, v *vault.Vault, repoPath, stag
 	}
 
 	svc := &Service{
-		catalog: c, vault: v, repo: repo, stageDir: stageDir,
+		catalog: c, vault: v, repo: repo, stageDir: stageDir, timeouts: timeouts,
 		wake: make(chan struct{}, 1), verificationWake: make(chan struct{}, 1), stopped: make(chan struct{}),
 	}
 	svc.scheduler = scheduler.New(c, svc)
@@ -156,34 +165,19 @@ func (s *Service) Start(ctx context.Context) error {
 		if err := s.cleanSnapshotIndexes(); err != nil {
 			slog.Warn("cannot remove old snapshot indexes", "error", err)
 		}
+		ctx = context.WithValue(ctx, serviceLeaseKey{}, lease)
 		go func() {
 			defer close(s.stopped)
 			defer lease.Close()
-			checksStopped := make(chan struct{})
-			go func() {
-				defer close(checksStopped)
-				s.runVerification(ctx)
-			}()
-			defer func() { <-checksStopped }()
-			ticker := time.NewTicker(10 * time.Second)
-			defer ticker.Stop()
-			for {
-				for ctx.Err() == nil {
-					did, err := s.scheduler.RunDue(ctx)
-					if err != nil && ctx.Err() == nil {
-						slog.Warn("scheduled run failed", "error", safeFailure(err))
-					}
-					if !did {
-						break
-					}
+			var workers sync.WaitGroup
+			workers.Go(func() { s.runVerification(ctx) })
+			workers.Go(func() {
+				if err := s.cleanInterruptedStaging(ctx, ""); err != nil && ctx.Err() == nil {
+					slog.Warn("cannot clean interrupted staging", "error", err)
 				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-				case <-s.wake:
-				}
-			}
+			})
+			s.dispatchBackups(ctx)
+			workers.Wait()
 		}()
 	})
 	return s.startErr
@@ -215,5 +209,72 @@ func (s *Service) notify() {
 	select {
 	case s.wake <- struct{}{}:
 	default:
+	}
+}
+
+func (s *Service) watchOperation(ctx context.Context) (context.Context, func()) {
+	if s.timeouts.idle != 0 {
+		ctx = context.WithValue(ctx, operationOptionsKey{}, s.timeouts)
+	}
+	return watchProgress(ctx)
+}
+
+func (s *Service) dispatchBackups(ctx context.Context) {
+	const parallelBackups = 2
+	finished := make(chan struct{}, parallelBackups)
+	var workers sync.WaitGroup
+	defer workers.Wait()
+	active := 0
+	for ctx.Err() == nil {
+		cutoff := time.Now()
+		recheck := s.scheduler.FlushFinishes(ctx)
+		for active < parallelBackups && ctx.Err() == nil {
+			run, err := s.scheduler.ClaimDue(ctx)
+			if err != nil && ctx.Err() == nil {
+				slog.Error("cannot claim backup attempt", "error", err)
+				recheck = true
+			}
+			if run == nil {
+				break
+			}
+			active++
+			workers.Go(func() {
+				defer func() { finished <- struct{}{} }()
+				if err := run(); err != nil && ctx.Err() == nil {
+					slog.Warn("scheduled run failed", "error", safeFailure(err))
+				}
+			})
+		}
+		var wakeAt *time.Time
+		if active < parallelBackups {
+			next, err := s.scheduler.NextWake(ctx, cutoff)
+			if err != nil && ctx.Err() == nil {
+				slog.Error("cannot read backup queue deadline", "error", err)
+				recheck = true
+			}
+			wakeAt = next
+		}
+		if recheck {
+			soon := time.Now().Add(time.Second)
+			if wakeAt == nil || soon.Before(*wakeAt) {
+				wakeAt = &soon
+			}
+		}
+		var timer *time.Timer
+		var deadline <-chan time.Time
+		if wakeAt != nil {
+			timer = time.NewTimer(time.Until(*wakeAt))
+			deadline = timer.C
+		}
+		select {
+		case <-ctx.Done():
+		case <-finished:
+			active--
+		case <-s.wake:
+		case <-deadline:
+		}
+		if timer != nil {
+			timer.Stop()
+		}
 	}
 }

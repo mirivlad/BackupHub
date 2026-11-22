@@ -51,9 +51,9 @@ func capturePostgres1C(ctx context.Context, settings Settings, password, target 
 		host, port = h, p
 	}
 	command := func(name string, args ...string) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, name, args...)
+		cmd := operationCommand(ctx, nil, name, args...)
 		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LANG=C", "PGHOST=" + host, "PGPORT=" + port,
-			"PGUSER=" + settings.Username, "PGDATABASE=" + settings.Database, "PGPASSWORD=" + password, "PGCONNECT_TIMEOUT=15"}
+			"PGUSER=" + settings.Username, "PGDATABASE=" + settings.Database, "PGPASSWORD=" + password, "PGCONNECT_TIMEOUT=" + connectSeconds(ctx)}
 		return cmd
 	}
 	exporter := command("psql", "-X", "-w", "-qAt", "-v", "ON_ERROR_STOP=1")
@@ -81,7 +81,7 @@ func capturePostgres1C(ctx context.Context, settings Settings, password, target 
 	}()
 
 	const start = `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
-SET LOCAL lock_timeout = '15s';
+SET LOCAL lock_timeout = '%ss';
 LOCK TABLE public.config IN ACCESS SHARE MODE;
 SELECT pg_export_snapshot(), json_build_object(
  'server_version_num', current_setting('server_version_num')::integer, 'server_version', version(),
@@ -98,10 +98,10 @@ SELECT pg_export_snapshot(), json_build_object(
  AND a.attname='binarydata' AND NOT a.attisdropped AND a.atttypid='pg_catalog.bytea'::regtype
  AND NOT EXISTS (SELECT 1 FROM pg_inherits WHERE inhparent=c.oid)))
 FROM pg_database d WHERE d.datname=current_database();`
-	if _, err = io.WriteString(input, start+"\n"); err != nil {
+	if _, err = io.WriteString(input, fmt.Sprintf(start, connectSeconds(ctx))+"\n"); err != nil {
 		return fmt.Errorf("start PostgreSQL 1C transaction: %w", err)
 	}
-	row, err := bufio.NewReaderSize(output, 128<<10).ReadSlice('\n')
+	row, err := bufio.NewReaderSize(progressReader{ctx, output}, 128<<10).ReadSlice('\n')
 	if err != nil {
 		_ = exporter.Process.Kill()
 		waitErr := exporter.Wait()
@@ -119,14 +119,17 @@ FROM pg_database d WHERE d.datname=current_database();`
 	}
 
 	dumpPath := filepath.Join(target, "database.dump")
-	if err = runPostgres1C(command("pg_dump", "-w", "--format=custom", "--no-owner", "--no-acl",
-		"--exclude-table-data=public.config", "--snapshot="+snapshot, "--file="+dumpPath)); err != nil {
+	stopDump := watchFileProgress(ctx, dumpPath)
+	err = runPostgres1C(command("pg_dump", "-w", "--format=custom", "--no-owner", "--no-acl",
+		"--lock-wait-timeout="+connectSeconds(ctx)+"s", "--exclude-table-data=public.config", "--snapshot="+snapshot, "--file="+dumpPath))
+	stopDump()
+	if err != nil {
 		return err
 	}
 	var toc boundedOutput
 	toc.max = 16 << 20
 	list := command("pg_restore", "--list", dumpPath)
-	list.Stdout = &toc
+	list.Stdout = progressWriter{ctx, &toc}
 	if err = runPostgres1C(list); err != nil {
 		return err
 	}
@@ -144,7 +147,7 @@ FROM pg_database d WHERE d.datname=current_database();`
 		"-c", "SET TRANSACTION SNAPSHOT '"+snapshot+"'",
 		"-c", "SET LOCAL row_security=off",
 		"-c", "COPY public.config TO STDOUT WITH (FORMAT binary)", "-c", "COMMIT")
-	copyCmd.Stdout = config
+	copyCmd.Stdout = progressWriter{ctx, config}
 	if err = errors.Join(runPostgres1C(copyCmd), config.Close()); err != nil {
 		return err
 	}
@@ -159,7 +162,7 @@ FROM pg_database d WHERE d.datname=current_database();`
 	if err != nil {
 		return fmt.Errorf("close PostgreSQL 1C snapshot session: %w", err)
 	}
-	return writePostgres1CManifest(target, meta)
+	return writePostgres1CManifest(ctx, target, meta)
 }
 
 func runPostgres1C(cmd *exec.Cmd) error {
@@ -219,7 +222,7 @@ func checkPostgres1CBinary(path string) error {
 	return nil
 }
 
-func writePostgres1CManifest(target string, meta postgres1CMetadata) error {
+func writePostgres1CManifest(ctx context.Context, target string, meta postgres1CMetadata) error {
 	files := make(map[string]postgres1CFile)
 	for _, name := range []string{"database.dump", "config.copy"} {
 		f, err := os.Open(filepath.Join(target, name))
@@ -227,7 +230,7 @@ func writePostgres1CManifest(target string, meta postgres1CMetadata) error {
 			return err
 		}
 		digest := sha256.New()
-		size, copyErr := io.Copy(digest, f)
+		size, copyErr := io.Copy(digest, progressReader{ctx, f})
 		if err = errors.Join(copyErr, f.Close()); err != nil {
 			return err
 		}

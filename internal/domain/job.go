@@ -13,6 +13,8 @@ const (
  JobCapturing JobState = "capturing"
  JobCommitting JobState = "committing"
  JobVerifying JobState = "verifying"
+ JobPublishing JobState = "publishing"
+ JobFinalizing JobState = "finalizing"
  JobCompleted JobState = "completed"
  JobWarnings JobState = "completed_with_warnings"
  JobFailed JobState = "failed"
@@ -25,11 +27,13 @@ var transitions = map[JobState][]JobState{
  JobScheduled:{JobWaiting,JobQueued,JobCancelled},
  JobWaiting:{JobQueued,JobCancelled,JobStale},
  JobQueued:{JobPreflight,JobCancelled,JobInterrupted},
- JobPreflight:{JobPreparing,JobFailed,JobCancelled,JobInterrupted,JobWaiting},
+ JobPreflight:{JobPreparing,JobVerifying,JobFailed,JobCancelled,JobInterrupted,JobWaiting},
  JobPreparing:{JobCapturing,JobFailed,JobCancelled,JobInterrupted},
  JobCapturing:{JobCommitting,JobFailed,JobCancelled,JobInterrupted},
  JobCommitting:{JobVerifying,JobFailed,JobInterrupted},
- JobVerifying:{JobCompleted,JobWarnings,JobFailed,JobInterrupted},
+ JobVerifying:{JobPublishing,JobCompleted,JobWarnings,JobFailed,JobInterrupted},
+ JobPublishing:{JobFinalizing,JobFailed,JobInterrupted},
+ JobFinalizing:{JobCompleted,JobFailed,JobInterrupted},
  JobInterrupted:{JobQueued,JobFailed,JobCancelled},
  JobStale:{JobQueued,JobCancelled},
 }

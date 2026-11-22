@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/mirivlad/BackupHub/internal/scheduler"
+	"time"
 )
 
 func (s *Service) ListSources(ctx context.Context) ([]Source, error) {
@@ -61,8 +62,9 @@ func (s *Service) Manual(ctx context.Context, id string) error {
 	if !safeID(id) {
 		return errors.New("invalid job ID")
 	}
-	result, err := s.catalog.DB.ExecContext(ctx, `UPDATE schedule_entries SET manual_pending=1
-   WHERE id=? AND enabled=1 AND active_run_id IS NULL AND manual_pending=0`, id)
+	result, err := s.catalog.DB.ExecContext(ctx, `UPDATE schedule_entries SET manual_pending=1,manual_queued_unix=?
+   WHERE id=? AND enabled=1 AND active_run_id IS NULL AND manual_pending=0 AND NOT EXISTS (
+    SELECT 1 FROM backup_operations WHERE schedule_id=schedule_entries.id AND state IN ('running','waiting'))`, time.Now().Unix(), id)
 	if err != nil {
 		return err
 	}
@@ -91,8 +93,9 @@ func (s *Service) Pause(ctx context.Context, id string, enabled bool) error {
 		active = 1
 	}
 	result, err := s.catalog.DB.ExecContext(ctx,
-		"UPDATE schedule_entries SET enabled=?,manual_pending=CASE WHEN ?=0 THEN 0 ELSE manual_pending END WHERE id=?",
-		active, active, id)
+		`UPDATE schedule_entries SET enabled=?,manual_pending=CASE WHEN ?=0 THEN 0 ELSE manual_pending END,
+		manual_queued_unix=CASE WHEN ?=0 THEN NULL ELSE manual_queued_unix END WHERE id=?`,
+		active, active, active, id)
 	if err != nil {
 		return err
 	}
@@ -103,14 +106,20 @@ func (s *Service) Pause(ctx context.Context, id string, enabled bool) error {
 	if n == 0 {
 		return sql.ErrNoRows
 	}
-	if enabled {
-		s.notify()
-	}
+	s.notify()
 	return nil
 }
 func (s *Service) RecentRuns(ctx context.Context) ([]scheduler.Run, error) {
 	return s.scheduler.RecentRuns(ctx, 100)
 }
 
-// Execute obeys the scheduler's typed transition ledger. A job can only be
-// marked successful once the final native Restic commit marker is durable.
+func (s *Service) ChangeRetry(ctx context.Context, id, operationID string, cancel bool) error {
+	if !safeID(id) || !safeID(operationID) {
+		return errors.New("invalid job or operation ID")
+	}
+	if err := s.scheduler.ChangeRetry(ctx, id, operationID, cancel); err != nil {
+		return err
+	}
+	s.notify()
+	return nil
+}

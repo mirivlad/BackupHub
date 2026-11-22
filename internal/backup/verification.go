@@ -313,8 +313,12 @@ func (s *Service) queuedChecks(ctx context.Context) ([]VerificationRun, error) {
 	 WHERE state='queued' AND NOT EXISTS (
 	  SELECT 1 FROM schedule_repositories dest JOIN schedule_entries task ON task.id=dest.schedule_id
 	  WHERE dest.repository_id=verification_runs.repository_id AND task.enabled=1 AND task.active_run_id IS NULL
-	  AND (task.manual_pending=1 OR task.next_run_unix<=?)
-	 ) ORDER BY queued_at,id`, time.Now().Unix())
+	  AND (
+	   EXISTS(SELECT 1 FROM backup_operations o WHERE o.schedule_id=task.id AND o.state='waiting' AND o.ready_unix<=?)
+	   OR ((task.manual_pending=1 OR task.next_run_unix<=?) AND NOT EXISTS(
+	     SELECT 1 FROM backup_operations o WHERE o.schedule_id=task.id AND o.state IN ('running','waiting')))
+	  )
+	 ) ORDER BY queued_at,id`, time.Now().Unix(), time.Now().Unix())
 	if err != nil {
 		return nil, err
 	}

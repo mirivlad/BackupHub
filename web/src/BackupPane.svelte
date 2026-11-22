@@ -9,9 +9,9 @@
  type Source={id:string;name:string;kind:string;host:string;share:string;path:string;username:string;database:string;access_status?:string;access_hint?:string;auth_method?:string;host_key_fingerprint?:string;};
  type Storage={id:string;name:string;path:string;free_bytes:number;status:string;password_mode:string};
  type Profile={mode:'interval'|'daily'|'weekly'|'cron';interval_value:number;interval_unit:string;days_of_week:string;hour:number;minute:number;timezone:string;first_run:string;cron_expression?:string};
- type Job={id:string;name:string;source_id:string;source_name:string;repository_id:string;schedule:Profile;enabled:boolean;next_run:string;running:boolean;manual_queued:boolean;current_state?:string};
+ type Job={id:string;name:string;source_id:string;source_name:string;repository_id:string;schedule:Profile;enabled:boolean;next_run:string;running:boolean;manual_queued:boolean;current_state?:string; retry_count:number; retry_interval_minutes:number; operation_id?:string; attempt?:number; next_retry?:string; wait_reason?:string; reconciling?:boolean};
  type Snapshot={id:string;source_id:string;source_name:string;kind:string;created_at:string;verification:string;fidelity:string;consistency:string;duration_ms?:number;restore_check:CheckStatus;can_test_restore:boolean};
- type Run={id:string;task_id:string;state:string;started_at:string;finished_at?:string;failure_code?:string;snapshot_id?:string};
+ type Run={id:string;task_id:string;state:string;started_at:string;finished_at?:string;failure_code?:string;snapshot_id?:string; operation_id?:string; attempt:number; failure_stage?:string; failure_detail?:string; operation_state?:string; operation_failure?:string; next_retry?:string};
  let {section,role,jobToEdit='',onNavigate}:{section:Section;role:string;jobToEdit?:string;onNavigate:(section:Section)=>void}=$props();
  let sources=$state<Source[]>([]);
  let storages=$state<Storage[]>([]);
@@ -33,7 +33,7 @@
  let previewError=$state('');
 
  let sourceForm=$state({name:'',kind:'smb',host:'',share:'',path:'',username:'',password:'',database:'',auth_method:'password',private_key:'',key_passphrase:''});
- let jobForm=$state({name:'',source_id:'',repository_id:''});
+ let jobForm=$state({name:'',source_id:'',repository_id:'',retry_count:3,retry_interval_minutes:30});
  let scheduleForm=$state({mode:'daily' as 'daily'|'weekly'|'interval'|'cron',time:'02:00',startDate:'',timezone:'UTC',interval:7,unit:'days',weekdays:[1,2,3,4,5] as number[]});
  const weekdays=[{id:1,label:'Пн'},{id:2,label:'Вт'},{id:3,label:'Ср'},{id:4,label:'Чт'},{id:5,label:'Пт'},{id:6,label:'Сб'},{id:0,label:'Вс'}];
  const canConfigure=$derived(role==='administrator');
@@ -54,7 +54,7 @@
  const size=(bytes:number)=>new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(bytes/1073741824)+' ГиБ';
  function sourceType(kind:string){return ({smb:'SMB',smb1:'SMB',sftp:'SFTP',postgres:'PostgreSQL',postgres_1c:'Postgres Pro для 1С',local:'Локальный каталог'} as Record<string,string>)[kind]??kind;}
  function sourcePath(s:Source){return ['smb','smb1'].includes(s.kind)?'//'+s.host+'/'+s.share+(s.path?'/'+s.path:''):['postgres','postgres_1c'].includes(s.kind)?s.host+'/'+s.database:s.kind==='sftp'?s.host+':'+s.path:s.path;}
- function stateLabel(state:string){return ({completed:'Завершено',completed_with_warnings:'С предупреждениями',failed:'Ошибка',queued:'В очереди',preflight:'Проверка',preparing:'Подготовка',capturing:'Копирование',committing:'Сохранение',verifying:'Проверка данных',waiting_for_source:'Ожидание источника',interrupted:'Прервано',cancelled:'Отменено'} as Record<string,string>)[state]??state;}
+ function stateLabel(state:string){return ({completed:'Завершено',completed_with_warnings:'С предупреждениями',failed:'Ошибка',queued:'В очереди',preflight:'Проверка',preparing:'Подготовка',capturing:'Копирование',committing:'Сохранение',verifying:'Проверка данных',publishing:'Публикация манифеста',finalizing:'Запись в каталог',reconciling:'Проверка после сбоя',waiting_for_source:'Ожидание источника',interrupted:'Прервано',cancelled:'Отменено'} as Record<string,string>)[state]??state;}
  function runTone(state:string){
   if(state==='completed')return 'good-state';
   if(['failed','interrupted'].includes(state))return 'error-state';
@@ -84,6 +84,7 @@
    storage_unavailable:'Хранилище недоступно. Проверьте состояние тома и репозитория',
    executor_error:'Ошибка во время копирования (подробности в журнале службы)',
    capture_failed:'Не удалось прочитать или подготовить данные источника',
+   restic_interrupted:'Процесс Restic завершился во время попытки',
    restic_backup_failed:'Restic не смог записать резервную копию в хранилище',
    restic_partial_backup:'Restic прочитал не все данные. Снимок не добавлен в историю',
    restic_verification_failed:'Не удалось проверить целостность данных в хранилище',
@@ -91,9 +92,29 @@
    restic_repository_locked:'Хранилище занято другой операцией Restic или блокировка недоступна для снятия',
    restic_manifest_failed:'Не удалось сохранить или проверить метаданные снимка',
    snapshot_catalog_failed:'Снимок записан, но его не удалось добавить в каталог',
-   process_restart:'Копирование прервано перезапуском службы'
+   process_restart:'Копирование прервано остановкой службы',
+   retry_exhausted:'Лимит повторов исчерпан',
+   retry_cancelled:'Ожидающий повтор отменён',
+   network_unavailable:'Соединение с источником прервано',
+   operation_timeout:'Истекло время ожидания подключения или передачи данных',
+   storage_full:'Недостаточно места на целевом диске',
+   repository_integrity:'Нарушена целостность репозитория',
+   source_authentication_failed:'Источник отклонил учётные данные',
+   storage_authentication_failed:'Не удалось открыть репозиторий с сохранёнными ключами',
+   source_configuration:'Проверьте настройки источника и наличие программ для копирования',
+   storage_configuration:'Проверьте настройки хранилища и наличие Restic'
   };
   return descriptions[code]??(code||'—');
+ }
+ function jobState(j:Job){
+  if(j.running||j.reconciling)return stateLabel(j.current_state||'queued');
+  if(!j.enabled)return 'Пауза';
+  if(j.next_retry){
+   if(j.wait_reason==='source_unavailable'||j.wait_reason==='network_unavailable')return 'Ожидание источника';
+   if(j.wait_reason==='storage_unavailable'||j.wait_reason==='storage_full')return 'Ожидание хранилища';
+   return 'Ожидание повтора';
+  }
+  return j.manual_queued?'Запуск в очереди':'По расписанию';
  }
  function schedulePayload():Profile{
   const days=scheduleForm.mode==='weekly'?weekdays.filter(x=>scheduleForm.weekdays.includes(x.id)).map(x=>x.id).join(','):'';
@@ -108,7 +129,7 @@
    editingSourceID=null;
    sourceForm={name:'',kind:'smb',host:'',share:'',path:'',username:'',password:'',database:'',auth_method:'password',private_key:'',key_passphrase:''};
   }else{
-   editingJobID=null;jobForm={name:'',source_id:'',repository_id:''};
+   editingJobID=null;jobForm={name:'',source_id:'',repository_id:'',retry_count:3,retry_interval_minutes:30};
    scheduleForm.mode='daily';scheduleForm.time='02:00';scheduleForm.interval=7;scheduleForm.unit='days';
    cronExpr='0 2 * * *';
   }
@@ -119,7 +140,7 @@
  }
  function beginEditJob(j:Job){
   editing=true;editingJobID=j.id;previewTimes=[];previewError='';
-  jobForm={name:j.name,source_id:j.source_id,repository_id:j.repository_id};
+  jobForm={name:j.name,source_id:j.source_id,repository_id:j.repository_id,retry_count:j.retry_count,retry_interval_minutes:j.retry_interval_minutes};
   scheduleForm.mode=j.schedule.mode;
   scheduleForm.interval=j.schedule.interval_value||7;
   scheduleForm.unit=j.schedule.interval_unit||'days';
@@ -211,7 +232,13 @@
    const result=await api<Job>(editingJobID?'/jobs/'+encodeURIComponent(editingJobID):'/jobs',
     editingJobID?{...opts,method:'PUT'}:opts);
    notice='Задание «'+result.name+'» сохранено';
-   editingJobID=null;jobForm={name:'',source_id:'',repository_id:''};previewTimes=[];
+   editingJobID=null;jobForm={name:'',source_id:'',repository_id:'',retry_count:3,retry_interval_minutes:30};previewTimes=[];
+  });
+ }
+ async function changeRetry(job:Job,cancel:boolean){
+  await runAction(async()=>{
+   await api('/jobs/'+encodeURIComponent(job.id)+(cancel?'/cancel-retry':'/retry'),jsonBody({operation_id:job.operation_id}));
+   notice=cancel?'Ожидающий повтор отменён':'Повтор готов к запуску';
   });
  }
  async function jobAction(id:string,op:'run'|'pause'|'resume'){await runAction(async()=>{await api('/jobs/'+encodeURIComponent(id)+'/'+op,actionBody());notice=op==='run'?'Запуск в очереди. Результат появится в журнале выполнения.':op==='pause'?'Задание приостановлено':'Задание включено';});}
@@ -370,6 +397,8 @@
       <label class="full">Название задания<input bind:value={jobForm.name} required maxlength="120" placeholder="Бэкап рабочих файлов"/></label>
       <label>Источник<select bind:value={jobForm.source_id} required><option value="" disabled>Выберите источник</option>{#each sources as s(s.id)}<option value={s.id}>{s.name} · {sourceType(s.kind)}</option>{/each}</select></label>
       <label>Хранилище<select bind:value={jobForm.repository_id} required><option value="" disabled>Выберите хранилище</option>{#each availableStorages as s(s.id)}<option value={s.id}>{s.name}</option>{/each}</select></label>
+      <label>Количество повторных попыток<input type="number" min="0" max="10" step="1" required bind:value={jobForm.retry_count}/></label>
+      <label>Шаг увеличения интервала, мин<input type="number" min="1" max="525600" step="1" required bind:value={jobForm.retry_interval_minutes}/></label>
       <div class="full schedule-heading"><h3>Расписание</h3><p class="secondary">Все настройки выполняются в этом задании.</p></div>
       <label class="full">Режим планирования
        <select bind:value={scheduleForm.mode} onchange={()=>{previewTimes=[];previewError='';}}>
@@ -415,13 +444,26 @@
      <td class="wrap-cell">{scheduleText(j.schedule)}</td>
      <td>{j.enabled?fmt(j.next_run):'—'}</td>
      <td>
-      <span class:muted={!j.enabled} class:active-state={j.running} class:warn-state={j.enabled&&!j.running&&j.manual_queued} class:good-state={j.enabled&&!j.running&&!j.manual_queued} class="status">{j.running?stateLabel(j.current_state||'queued'):j.manual_queued?'Запуск в очереди':j.enabled?'По расписанию':'Пауза'}</span>
+      <span class:muted={!j.enabled} class:active-state={j.running} class:warn-state={j.enabled&&!j.running&&(!!j.next_retry||j.manual_queued||j.reconciling)} class:good-state={j.enabled&&!j.running&&!j.operation_id&&!j.manual_queued} class="status">{jobState(j)}</span>
+      {#if j.attempt}<small class="subline">Попытка {j.attempt} из {j.retry_count+1}</small>{/if}
+      {#if j.next_retry}
+       <small class="subline">{failureText(j.wait_reason||'')}</small>
+       <small class="subline">Повтор {fmt(j.next_retry)}</small>
+      {/if}
       {#if j.running&&activeRun(j)}
        <small class="subline">Выполняется: {elapsed(activeRun(j)!.started_at)}</small>
       {/if}
      </td>
-     <td class="action-cell">{#if canRun}<button class="text-button" onclick={()=>void jobAction(j.id,'run')} disabled={busy||!j.enabled||j.running||j.manual_queued} title={j.running?'Задание уже выполняется':j.manual_queued?'Запуск уже в очереди':'Выполнить копирование сейчас'}>Запустить сейчас</button>{/if}
-      {#if canConfigure}<button class="text-button" onclick={()=>beginEditJob(j)} disabled={busy}>Изменить</button>
+     <td class="action-cell">
+      {#if canRun}
+       {#if j.next_retry}
+        <button class="text-button" onclick={()=>void changeRetry(j,false)} disabled={busy||!j.enabled}>Повторить сейчас</button>
+        <button class="text-button" onclick={()=>void changeRetry(j,true)} disabled={busy}>Отменить ожидающий повтор</button>
+       {:else}
+        <button class="text-button" onclick={()=>void jobAction(j.id,'run')} disabled={busy||!j.enabled||j.running||j.manual_queued||!!j.operation_id}>Запустить сейчас</button>
+       {/if}
+      {/if}
+      {#if canConfigure}<button class="text-button" onclick={()=>beginEditJob(j)} disabled={busy||j.running||!!j.operation_id}>Изменить</button>
       <button class="text-button" onclick={()=>void jobAction(j.id,j.enabled?'pause':'resume')} disabled={busy}>{j.enabled?'Пауза':'Включить'}</button>{/if}</td>
     </tr>{/each}</tbody></table></div>{/if}
   </section>
@@ -430,7 +472,35 @@
  {:else if section==='runs'}
   <section class="detail-card"><div class="section-head"><h2>Последние запуски <span class="count">{runs.length}</span></h2></div>
    {#if runs.length===0}<div class="empty-state"><strong>Журнал пуст</strong><p>Результаты запусков появятся здесь.</p></div>
-   {:else}<div class="table-scroll"><table><thead><tr><th>Начало</th><th>Задание</th><th>Результат</th><th>Завершение</th><th>Длительность</th><th>Подробности</th></tr></thead><tbody>{#each runs as r(r.id)}<tr><td>{fmt(r.started_at)}</td><td>{jobs.find(j=>j.id===r.task_id)?.name??r.task_id.slice(0,8)}</td><td><span class={'status '+runTone(r.state)}>{stateLabel(r.state)}</span></td><td>{fmt(r.finished_at??'')}</td><td>{runDuration(r)}</td><td class="run-detail">{#if r.state==='completed'&&r.snapshot_id}<button class="text-button" onclick={()=>void openRunSnapshot(r.snapshot_id!)}>Открыть снимок</button>{:else}{failureText(r.failure_code||'')}{/if}</td></tr>{/each}</tbody></table></div>{/if}
+   {:else}<div class="table-scroll"><table><thead><tr><th>Начало</th><th>Задание</th><th>Результат</th><th>Завершение</th><th>Длительность</th><th>Подробности</th></tr></thead><tbody>
+    {#each runs as r(r.id)}
+     <tr>
+      <td>{fmt(r.started_at)}</td>
+      <td>{jobs.find(j=>j.id===r.task_id)?.name??r.task_id.slice(0,8)}
+       {#if r.operation_id}<small class="subline" title={r.operation_id}>Операция {r.operation_id.slice(0,8)} · попытка {r.attempt}</small>{/if}
+      </td>
+      <td><span class={'status '+runTone(r.state)}>{stateLabel(r.state)}</span></td>
+      <td>{fmt(r.finished_at??'')}</td>
+      <td>{runDuration(r)}</td>
+      <td class="run-detail">
+       {#if r.failure_code}
+        {failureText(r.failure_code)}
+        {#if r.failure_stage}<small class="subline">{stateLabel(r.failure_stage)}</small>{/if}
+       {/if}
+       {#if r.operation_failure==='retry_exhausted'||r.operation_failure==='retry_cancelled'}
+        <small class="subline">{failureText(r.operation_failure)}</small>
+       {/if}
+       {#if r.snapshot_id&&(r.state==='completed'||r.operation_state==='completed')}
+        {#if r.attempt>1||r.state!=='completed'}<small class="subline">Копирование завершено после сбоя</small>{/if}
+        <button class="text-button" onclick={()=>void openRunSnapshot(r.snapshot_id!)}>Открыть снимок</button>
+       {/if}
+       {#if r.next_retry&&!r.snapshot_id&&r.operation_state==='waiting'}
+        <small class="subline">Следующий повтор {fmt(r.next_retry)}</small>
+       {/if}
+      </td>
+     </tr>
+    {/each}
+   </tbody></table></div>{/if}
   </section>
  {:else if section==='history'}
   <section class="detail-card"><div class="section-head"><h2>Снимки <span class="count">{snapshots.length}</span></h2></div>

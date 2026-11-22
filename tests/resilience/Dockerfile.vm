@@ -1,0 +1,12 @@
+FROM backuphub-resilience-fixtures
+ENV DEBIAN_FRONTEND=noninteractive
+RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d \
+ && apt-get update && apt-get install -y --no-install-recommends \
+    python3 systemd-sysv dbus e2fsprogs kmod initramfs-tools linux-image-amd64 \
+ && rm -f /usr/sbin/policy-rc.d && rm -rf /var/lib/apt/lists/*
+COPY guest.py /opt/bh-lab/guest.py
+COPY backuphub.deb /opt/bh-lab/backuphub.deb
+COPY baseline.deb /opt/bh-lab/baseline.deb
+COPY backuphub-guest-acceptance.service /etc/systemd/system/backuphub-guest-acceptance.service
+RUN systemctl enable backuphub-guest-acceptance.service \
+ && systemctl disable ssh smbd nmbd postgresql

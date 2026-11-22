@@ -306,10 +306,10 @@ func existingRepository(repoPath, keyPath, mode string) (*repository, error) {
 	if mode == PasswordMode {
 		keyInfo, err := os.Lstat(keyPath)
 		if err != nil {
-			return nil, fmt.Errorf("repository credentials unavailable: %w", err)
+			return nil, errors.Join(errStorageCredentials, err)
 		}
 		if !keyInfo.Mode().IsRegular() || keyInfo.Mode().Perm()&0077 != 0 {
-			return nil, errors.New("repository key must be private")
+			return nil, fmt.Errorf("%w: repository key must be private", errStorageCredentials)
 		}
 	} else {
 		if _, err := os.Lstat(keyPath); err == nil {
@@ -323,7 +323,7 @@ func existingRepository(repoPath, keyPath, mode string) (*repository, error) {
 		return nil, fmt.Errorf("repository unavailable: %w", err)
 	}
 	if !config.Mode().IsRegular() {
-		return nil, errors.New("invalid restic repository config")
+		return nil, fmt.Errorf("%w: invalid Restic repository config", errRepositoryIntegrity)
 	}
 	return r, nil
 }
@@ -335,7 +335,7 @@ func (r *repository) command(ctx context.Context, stdin io.Reader, args ...strin
 	} else {
 		base = append(base, "--password-file", r.passwordFile)
 	}
-	cmd := exec.CommandContext(ctx, r.binary, append(base, args...)...)
+	cmd := operationCommand(ctx, nil, r.binary, append(base, args...)...)
 	// Let Restic release its repository lock before forcing termination.
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 30 * time.Second
@@ -348,11 +348,12 @@ func (r *repository) run(ctx context.Context, stdin io.Reader, args ...string) (
 	var stdout, stderr boundedOutput
 	stdout.max = 16 << 20
 	stderr.max = 8192
-	cmd.Stdout = &stdout
+	cmd.Stdout = progressWriter{ctx, &stdout}
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("restic %s: %w: %s", args[0], err, stderr.String())
 	}
+	noteProgress(ctx)
 	return stdout.buf.Bytes(), nil
 }
 
@@ -396,6 +397,7 @@ func (r *repository) treeBackup(ctx context.Context, root, sourceID string) (str
 		return "", errors.New("invalid source id")
 	}
 	cmd := r.command(ctx, nil, "backup", "--json", "--tag", "bh-pending", "--tag", "bh-source-"+sourceID, "--host", "backuphub", root)
+	cmd.Env = append(cmd.Env, "RESTIC_PROGRESS_FPS=4")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err
@@ -409,13 +411,26 @@ func (r *repository) treeBackup(ctx context.Context, root, sourceID string) (str
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 4096), 2<<20)
 	var snapshot string
+	var files, bytes, discoveredFiles, discoveredBytes uint64
 	for scanner.Scan() {
 		var line struct {
 			MessageType string `json:"message_type"`
 			SnapshotID  string `json:"snapshot_id"`
+			FilesDone   uint64 `json:"files_done"`
+			BytesDone   uint64 `json:"bytes_done"`
+			TotalFiles  uint64 `json:"total_files"`
+			TotalBytes  uint64 `json:"total_bytes"`
 		}
-		if json.Unmarshal(scanner.Bytes(), &line) == nil && line.MessageType == "summary" {
+		if json.Unmarshal(scanner.Bytes(), &line) != nil {
+			continue
+		}
+		if line.MessageType == "summary" {
 			snapshot = line.SnapshotID
+		}
+		if line.FilesDone > files || line.BytesDone > bytes || line.TotalFiles > discoveredFiles || line.TotalBytes > discoveredBytes {
+			noteProgress(ctx)
+			files, bytes = max(files, line.FilesDone), max(bytes, line.BytesDone)
+			discoveredFiles, discoveredBytes = max(discoveredFiles, line.TotalFiles), max(discoveredBytes, line.TotalBytes)
 		}
 	}
 	scanErr := scanner.Err()
@@ -479,6 +494,7 @@ const (
 type portableRecord struct {
 	Format            string `json:"format"`
 	ID                string `json:"id"`
+	AttemptID         string `json:"attempt_id,omitempty"`
 	SourceID          string `json:"source_id"`
 	SourceName        string `json:"source_name"`
 	Kind              string `json:"kind"`

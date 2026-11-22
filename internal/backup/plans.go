@@ -27,23 +27,48 @@ type ScheduleProfile struct {
 	Minute         int    `json:"minute"`
 }
 type BackupJob struct {
-	ID           string          `json:"id"`
-	Name         string          `json:"name"`
-	SourceID     string          `json:"source_id"`
-	SourceName   string          `json:"source_name"`
-	RepositoryID string          `json:"repository_id"`
-	Schedule     ScheduleProfile `json:"schedule"`
-	Enabled      bool            `json:"enabled"`
-	Running      bool            `json:"running"`
-	ManualQueued bool            `json:"manual_queued"`
-	CurrentState string          `json:"current_state,omitempty"`
-	NextRun      string          `json:"next_run"`
+	ID                   string          `json:"id"`
+	Name                 string          `json:"name"`
+	SourceID             string          `json:"source_id"`
+	SourceName           string          `json:"source_name"`
+	RepositoryID         string          `json:"repository_id"`
+	Schedule             ScheduleProfile `json:"schedule"`
+	Enabled              bool            `json:"enabled"`
+	Running              bool            `json:"running"`
+	ManualQueued         bool            `json:"manual_queued"`
+	CurrentState         string          `json:"current_state,omitempty"`
+	NextRun              string          `json:"next_run"`
+	RetryCount           int             `json:"retry_count"`
+	RetryIntervalMinutes int             `json:"retry_interval_minutes"`
+	OperationID          string          `json:"operation_id,omitempty"`
+	Attempt              int             `json:"attempt,omitempty"`
+	NextRetry            *time.Time      `json:"next_retry,omitempty"`
+	WaitReason           string          `json:"wait_reason,omitempty"`
+	Reconciling          bool            `json:"reconciling,omitempty"`
 }
 type CreateBackupJob struct {
-	Name         string          `json:"name"`
-	SourceID     string          `json:"source_id"`
-	RepositoryID string          `json:"repository_id"`
-	Schedule     ScheduleProfile `json:"schedule"`
+	Name                 string          `json:"name"`
+	SourceID             string          `json:"source_id"`
+	RepositoryID         string          `json:"repository_id"`
+	Schedule             ScheduleProfile `json:"schedule"`
+	RetryCount           *int            `json:"retry_count,omitempty"`
+	RetryIntervalMinutes *int            `json:"retry_interval_minutes,omitempty"`
+}
+
+func (in CreateBackupJob) retrySettings(count, minutes int) (int, int, error) {
+	if in.RetryCount != nil {
+		count = *in.RetryCount
+	}
+	if in.RetryIntervalMinutes != nil {
+		minutes = *in.RetryIntervalMinutes
+	}
+	if count < 0 || count > 10 {
+		return count, minutes, errors.New("retry count must be between 0 and 10")
+	}
+	if minutes < 1 || minutes > 525600 {
+		return count, minutes, errors.New("retry interval must be between 1 and 525600 minutes")
+	}
+	return count, minutes, nil
 }
 
 func validateSchedule(p ScheduleProfile) (ScheduleProfile, time.Time, int, error) {
@@ -168,6 +193,10 @@ func (s *Service) CreateJob(ctx context.Context, in CreateBackupJob) (BackupJob,
 	if name == "" || utf8.RuneCountInString(name) > 120 || strings.ContainsAny(name, "\x00\r\n") {
 		return empty, errors.New("invalid job name")
 	}
+	retries, step, err := in.retrySettings(3, 30)
+	if err != nil {
+		return empty, err
+	}
 	p, anchor, minutes, err := validateSchedule(in.Schedule)
 	if err != nil {
 		return empty, err
@@ -202,8 +231,8 @@ func (s *Service) CreateJob(ctx context.Context, in CreateBackupJob) (BackupJob,
 		_, err = tx.ExecContext(ctx, `INSERT INTO jobs(id,dataset_id,schedule_json,created_at) VALUES(?,?,?,?)`, id, in.SourceID, "{}", created)
 	}
 	if err == nil {
-		_, err = tx.ExecContext(ctx, `INSERT INTO schedule_entries(id,dataset_id,kind,interval_seconds,next_run_unix,enabled,created_at,profile_id,display_name)
- VALUES(?,?,?,?,?,?,?,?,?)`, id, in.SourceID, "backup", profileInterval(p, minutes), nextUnix, 1, created, id, name)
+		_, err = tx.ExecContext(ctx, `INSERT INTO schedule_entries(id,dataset_id,kind,interval_seconds,next_run_unix,enabled,created_at,profile_id,display_name,retry_count,retry_interval_minutes)
+ VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, in.SourceID, "backup", profileInterval(p, minutes), nextUnix, 1, created, id, name, retries, step)
 	}
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `INSERT INTO schedule_repositories(schedule_id,repository_id) VALUES(?,?)`, id, in.RepositoryID)
@@ -215,7 +244,7 @@ func (s *Service) CreateJob(ctx context.Context, in CreateBackupJob) (BackupJob,
 		return empty, fmt.Errorf("create job: %w", err)
 	}
 	s.notify()
-	return BackupJob{ID: id, Name: name, SourceID: in.SourceID, SourceName: sourceName, RepositoryID: in.RepositoryID, Schedule: p, Enabled: true, NextRun: time.Unix(nextUnix, 0).UTC().Format(time.RFC3339)}, nil
+	return BackupJob{ID: id, Name: name, SourceID: in.SourceID, SourceName: sourceName, RepositoryID: in.RepositoryID, Schedule: p, Enabled: true, RetryCount: retries, RetryIntervalMinutes: step, NextRun: time.Unix(nextUnix, 0).UTC().Format(time.RFC3339)}, nil
 }
 func (s *Service) ListJobs(ctx context.Context) ([]BackupJob, error) {
 	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT e.id,COALESCE(NULLIF(e.display_name,''),src.display_name),
@@ -224,9 +253,11 @@ func (s *Service) ListJobs(ctx context.Context) ([]BackupJob, error) {
  COALESCE(p.days_of_week,''),COALESCE(p.hour,0),COALESCE(p.minute,0),
  COALESCE(p.timezone,'UTC'),COALESCE(p.start_at_unix,0),
  COALESCE(p.interval_unit,'minutes'),COALESCE(p.interval_value,e.interval_seconds/60),COALESCE(p.cron_expression,''),
- COALESCE(e.active_run_id,''),e.manual_pending,COALESCE(active.state,'')
+ COALESCE(e.active_run_id,''),e.manual_pending,COALESCE(active.state,''),
+ e.retry_count,e.retry_interval_minutes,COALESCE(o.id,''),COALESCE(o.attempt,0),o.ready_unix,COALESCE(o.failure_code,''),o.recover_run_id IS NOT NULL
  FROM schedule_entries e JOIN sources src ON src.id=e.dataset_id
  LEFT JOIN schedule_runs active ON active.id=e.active_run_id
+ LEFT JOIN backup_operations o ON o.schedule_id=e.id AND o.state IN ('running','waiting')
  LEFT JOIN schedule_profiles p ON p.id=e.profile_id
  LEFT JOIN schedule_repositories sr ON sr.schedule_id=e.id
  WHERE e.kind='backup' ORDER BY e.created_at DESC,e.id DESC`)
@@ -241,9 +272,11 @@ func (s *Service) ListJobs(ctx context.Context) ([]BackupJob, error) {
 		var next, anchor int64
 		var activeID, activeState string
 		var pending int
+		var ready sql.NullInt64
 		var p ScheduleProfile
 		if err = rows.Scan(&j.ID, &j.Name, &j.SourceID, &j.SourceName, &j.RepositoryID, &enabled, &next,
-			&p.Mode, &minutes, &p.DaysOfWeek, &p.Hour, &p.Minute, &p.Timezone, &anchor, &p.IntervalUnit, &p.IntervalValue, &p.CronExpression, &activeID, &pending, &activeState); err != nil {
+			&p.Mode, &minutes, &p.DaysOfWeek, &p.Hour, &p.Minute, &p.Timezone, &anchor, &p.IntervalUnit, &p.IntervalValue, &p.CronExpression, &activeID, &pending, &activeState,
+			&j.RetryCount, &j.RetryIntervalMinutes, &j.OperationID, &j.Attempt, &ready, &j.WaitReason, &j.Reconciling); err != nil {
 			return nil, err
 		}
 		if anchor > 0 {
@@ -259,6 +292,12 @@ func (s *Service) ListJobs(ctx context.Context) ([]BackupJob, error) {
 		j.Enabled = enabled != 0
 		j.Running = activeID != ""
 		j.CurrentState = activeState
+		if j.Reconciling {
+			j.CurrentState = "reconciling"
+		} else if ready.Valid {
+			nextRetry := time.Unix(ready.Int64, 0).UTC()
+			j.NextRetry = &nextRetry
+		}
 		j.ManualQueued = pending != 0
 		j.NextRun = time.Unix(next, 0).UTC().Format(time.RFC3339)
 		out = append(out, j)

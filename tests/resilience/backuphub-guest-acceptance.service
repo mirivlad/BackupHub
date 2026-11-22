@@ -1,0 +1,10 @@
+[Unit]
+Description=BackupHub isolated acceptance
+After=network.target
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 -u /opt/bh-lab/guest.py
+StandardOutput=journal+console
+StandardError=journal+console
+[Install]
+WantedBy=multi-user.target

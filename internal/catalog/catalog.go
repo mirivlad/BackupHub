@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 14
+const SchemaVersion = 15
 
 // Catalog stores operational state; the portable repository manifest must
 // remain sufficient for rebuilding the snapshot index after database loss.
@@ -64,7 +64,7 @@ func Open(dataDir string) (_ *Catalog, err error) {
 	db.SetMaxOpenConns(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	for _, statement := range []string{"PRAGMA busy_timeout=5000", "PRAGMA foreign_keys=ON", "PRAGMA journal_mode=WAL"} {
+	for _, statement := range []string{"PRAGMA busy_timeout=5000", "PRAGMA foreign_keys=ON", "PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL"} {
 		if _, err = db.ExecContext(ctx, statement); err != nil {
 			return nil, fmt.Errorf("sqlite setup: %w", err)
 		}
@@ -396,6 +396,11 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			}
 		}
 		if _, err = tx.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS schedule_repositories_by_storage ON schedule_repositories(repository_id)"); err != nil {
+			return err
+		}
+	}
+	if version < 15 {
+		if err = migrateBackupQueue(ctx, tx); err != nil {
 			return err
 		}
 	}

@@ -69,7 +69,7 @@ func TestSMB1CaptureAndRestore(t *testing.T) {
 		t.Fatalf("missing directory changed history: %v %v", history, err)
 	}
 	runs, err := service.RecentRuns(ctx)
-	if err != nil || len(runs) != 2 || runs[0].State != "failed" || runs[0].FailureCode != "capture_failed" || runs[0].SnapshotID != "" {
+	if err != nil || len(runs) != 2 || runs[0].State != "failed" || runs[0].FailureCode != "source_unavailable" || runs[0].SnapshotID != "" || runs[0].NextRetry == nil {
 		t.Fatalf("failed capture must have a diagnostic and no snapshot: %#v %v", runs, err)
 	}
 }

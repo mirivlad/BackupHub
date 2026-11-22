@@ -48,13 +48,12 @@ func captureSMB1(ctx context.Context, settings Settings, password, target string
 	}
 	defer secret.Close()
 	args := []string{"--no-new-privs", "--ambient-caps=-all", "--inh-caps=-all", "--", binary,
-		"-s", "/dev/null", "-d", "0", "-E", "-p", port, "-m", "NT1", "--option=client min protocol=NT1",
+		"-s", "/dev/null", "-d", "0", "-t", connectSeconds(ctx), "-E", "-p", port, "-m", "NT1", "--option=client min protocol=NT1",
 		"--use-kerberos=off", "--client-protection=sign", "--user=" + settings.Username, "//" + host + "/" + settings.Share}
 	if remote != "" {
 		args = append(args, "-D", remote)
 	}
-	cmd := exec.CommandContext(ctx, setpriv, append(args, "-Tc", "-")...)
-	cmd.ExtraFiles = []*os.File{secret}
+	cmd := operationCommand(ctx, []*os.File{secret}, setpriv, append(args, "-Tc", "-")...)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LANG=C", "PASSWD_FILE=/proc/self/fd/3"}
 	var stderr boundedOutput
 	stderr.max = 8192
@@ -66,7 +65,7 @@ func captureSMB1(ctx context.Context, settings Settings, password, target string
 	if err = cmd.Start(); err != nil {
 		return err
 	}
-	count, size, unpackErr := unpackSMB1Tar(ctx, stream, remote, target)
+	count, size, unpackErr := unpackSMB1Tar(ctx, progressReader{ctx, stream}, remote, target)
 	if unpackErr == nil {
 		_, unpackErr = io.Copy(io.Discard, stream)
 	}
