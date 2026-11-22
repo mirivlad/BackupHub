@@ -191,14 +191,17 @@ func recoveryKeyNames(ctx context.Context, c *catalog.Catalog) ([]string, error)
 			return nil, errors.New("invalid storage entry in recovery catalog")
 		}
 		if mode == PasswordMode {
-			if id == PrimaryStorageID {
-				names = append(names, "restic.key")
-			} else {
-				names = append(names, "restic-"+id+".key")
-			}
+			names = append(names, recoveryStorageKeyName(id))
 		}
 	}
 	return names, rows.Err()
+}
+
+func recoveryStorageKeyName(id string) string {
+	if id == PrimaryStorageID {
+		return "restic.key"
+	}
+	return "restic-" + id + ".key"
 }
 
 func openPrivateRecoveryFile(path string) (*os.File, error) {

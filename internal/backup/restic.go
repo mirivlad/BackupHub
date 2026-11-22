@@ -419,6 +419,11 @@ func validResticID(s string) bool {
 
 // This commit is independent of the SQLite catalog. Rebuilding the catalog can
 // enumerate bh-commit-* markers and verify referenced native Restic snapshots.
+const (
+	portableTreeFormat = "backuphub.restic.tree.v1"
+	portableTreeFile   = "backuphub-tree-manifest.json"
+)
+
 type portableRecord struct {
 	Format       string `json:"format"`
 	ID           string `json:"id"`
@@ -437,12 +442,12 @@ func (r *repository) commit(ctx context.Context, rec portableRecord) (string, er
 	if !safeID(rec.ID) || !validResticID(rec.ResticID) {
 		return "", errors.New("invalid committed identifiers")
 	}
-	rec.Format = "backuphub.restic.tree.v1"
+	rec.Format = portableTreeFormat
 	blob, err := json.Marshal(rec)
 	if err != nil {
 		return "", err
 	}
-	output, err := r.run(ctx, bytes.NewReader(blob), "backup", "--stdin", "--stdin-filename", "backuphub-tree-manifest.json", "--tag", "bh-commit-"+rec.ID, "--json")
+	output, err := r.run(ctx, bytes.NewReader(blob), "backup", "--stdin", "--stdin-filename", portableTreeFile, "--tag", "bh-commit-"+rec.ID, "--json")
 	if err != nil {
 		return "", err
 	}

@@ -176,8 +176,8 @@ func (s *Service) CreateJob(ctx context.Context, in CreateBackupJob) (BackupJob,
 		return empty, errors.New("destination storage unavailable")
 	}
 	var sourceName string
-	if err = s.catalog.DB.QueryRowContext(ctx, "SELECT display_name FROM sources WHERE id=?", in.SourceID).Scan(&sourceName); err != nil {
-		return empty, errors.New("source not found")
+	if err = s.catalog.DB.QueryRowContext(ctx, "SELECT display_name FROM sources WHERE id=? AND kind<>?", in.SourceID, recoveredSourceKind).Scan(&sourceName); err != nil {
+		return empty, errors.New("source not found or available only for restore")
 	}
 	now := time.Now().UTC()
 	next, err := nextSchedule(p, anchor, now)

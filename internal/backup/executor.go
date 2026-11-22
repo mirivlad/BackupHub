@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"github.com/mirivlad/BackupHub/internal/domain"
@@ -105,17 +106,20 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO snapshots(id,dataset_id,repository_id,state,manifest_ref,created_at) VALUES(?,?,?,?,?,?)`, id, source.ID, repoID, "committed", markerID, at)
-	if err == nil {
-		_, err = tx.ExecContext(ctx, `INSERT INTO file_snapshots(snapshot_id,source_id,restic_id,root_path,committed_at,verification,fidelity,consistency) VALUES(?,?,?,?,?,?,?,?)`, id, source.ID, native, root, at, "data_sha256_verified", fidelity, consistency)
-	}
-	if err != nil {
+	if err = insertCommittedTree(ctx, tx, repoID, markerID, marker); err != nil {
 		return err
 	}
-	if err = tx.Commit(); err != nil {
+	return tx.Commit()
+}
+
+func insertCommittedTree(ctx context.Context, tx *sql.Tx, repoID, markerID string, rec portableRecord) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO snapshots(id,dataset_id,repository_id,state,manifest_ref,created_at) VALUES(?,?,?,?,?,?)`,
+		rec.ID, rec.SourceID, repoID, "committed", markerID, rec.At); err != nil {
 		return err
 	}
-	return nil
+	_, err := tx.ExecContext(ctx, `INSERT INTO file_snapshots(snapshot_id,source_id,restic_id,root_path,committed_at,verification,fidelity,consistency) VALUES(?,?,?,?,?,?,?,?)`,
+		rec.ID, rec.SourceID, rec.ResticID, rec.Root, rec.At, "data_sha256_verified", rec.Fidelity, rec.Consistency)
+	return err
 }
 func (s *Service) capture(ctx context.Context, sourceID, kind string, settings Settings, password, staging string) (string, func(), error) {
 	if kind == "local" {

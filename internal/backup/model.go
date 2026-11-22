@@ -91,6 +91,11 @@ func New(ctx context.Context, c *catalog.Catalog, v *vault.Vault, repoPath, stag
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
 		return nil, errors.New("staging directory must be private and real")
 	}
+	if repoPath == "" {
+		if err = c.DB.QueryRowContext(ctx, "SELECT path FROM storage_repositories WHERE id=?", PrimaryStorageID).Scan(&repoPath); err != nil {
+			return nil, err
+		}
+	}
 	repo, err := initRepository(ctx, c.DataDir, repoPath)
 	if err != nil {
 		return nil, err
