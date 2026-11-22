@@ -22,6 +22,15 @@ var ErrSourceUnavailable = errors.New("source unavailable")
 var ErrSourcePermissionDenied = errors.New("source permission denied")
 var ErrSSHHostKeyChanged = errors.New("SSH host key changed")
 
+// BackupFailure carries a component-selected, non-secret failure code.
+type BackupFailure struct {
+	Code string
+	Err  error
+}
+
+func (e *BackupFailure) Error() string { return e.Err.Error() }
+func (e *BackupFailure) Unwrap() error { return e.Err }
+
 const MaxInterval = 365 * 24 * time.Hour
 const retryDelay = 5 * time.Minute
 
@@ -32,6 +41,8 @@ type Task struct {
 	Interval  time.Duration `json:"-"`
 	NextRun   time.Time     `json:"next_run"`
 	Enabled   bool          `json:"enabled"`
+	RunID     string        `json:"-"`
+	StartedAt time.Time     `json:"-"`
 }
 type Run struct {
 	ID          string          `json:"id"`
@@ -40,6 +51,7 @@ type Run struct {
 	StartedAt   time.Time       `json:"started_at"`
 	FinishedAt  *time.Time      `json:"finished_at,omitempty"`
 	FailureCode string          `json:"failure_code,omitempty"`
+	SnapshotID  string          `json:"snapshot_id,omitempty"`
 }
 
 // Executor is implemented only by registered native capture/verify/replica
@@ -156,6 +168,7 @@ func (s *Scheduler) RunDue(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	now := s.now()
+	t.RunID, t.StartedAt = runID, now
 	res, err := tx.ExecContext(ctx, `UPDATE schedule_entries SET active_run_id=?,manual_pending=0 WHERE id=? AND active_run_id IS NULL`, runID, t.ID)
 	if err != nil {
 		return false, err
@@ -207,6 +220,10 @@ func (s *Scheduler) RunDue(ctx context.Context) (bool, error) {
 	if executeErr != nil {
 		finalState = domain.JobFailed
 		code = "executor_error"
+		var failure *BackupFailure
+		if errors.As(executeErr, &failure) {
+			code = failure.Code
+		}
 		if errors.Is(executeErr, ErrSourcePermissionDenied) {
 			code = "source_permission_denied"
 		}
@@ -215,7 +232,9 @@ func (s *Scheduler) RunDue(ctx context.Context) (bool, error) {
 		}
 		if errors.Is(executeErr, ErrSourceUnavailable) && current == domain.JobPreflight {
 			finalState = domain.JobWaiting
-			code = "source_unavailable"
+			if failure == nil {
+				code = "source_unavailable"
+			}
 		}
 	} else if current != domain.JobVerifying {
 		finalState = domain.JobFailed
@@ -266,8 +285,8 @@ func (s *Scheduler) RecentRuns(ctx context.Context, limit int) ([]Run, error) {
 	if limit < 1 || limit > 100 {
 		return nil, errors.New("limit must be 1 to 100")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,schedule_id,state,started_at,finished_at,failure_code
- FROM schedule_runs ORDER BY started_at DESC,id DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.schedule_id,r.state,r.started_at,r.finished_at,r.failure_code,COALESCE(f.snapshot_id,'')
+ FROM schedule_runs r LEFT JOIN file_snapshots f ON f.run_id=r.id ORDER BY r.started_at DESC,r.id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +296,7 @@ func (s *Scheduler) RecentRuns(ctx context.Context, limit int) ([]Run, error) {
 		var run Run
 		var started string
 		var finished sql.NullString
-		if err = rows.Scan(&run.ID, &run.TaskID, &run.State, &started, &finished, &run.FailureCode); err != nil {
+		if err = rows.Scan(&run.ID, &run.TaskID, &run.State, &started, &finished, &run.FailureCode, &run.SnapshotID); err != nil {
 			return nil, err
 		}
 		run.StartedAt, err = time.Parse(time.RFC3339Nano, started)

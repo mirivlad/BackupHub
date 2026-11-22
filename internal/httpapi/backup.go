@@ -59,7 +59,22 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			if !method(w, r, http.MethodGet) {
 				return
 			}
-			jsonResponse(w, 200, map[string]any{"engine": "restic", "connected": true, "supported_sources": []string{"local", "smb", "smb1", "sftp", "postgres", "postgres_1c"}, "production_ready": false})
+			jsonResponse(w, 200, map[string]any{"engine": "restic", "connected": true, "supported_sources": []string{"local", "smb", "sftp", "postgres", "postgres_1c"}, "production_ready": false})
+			return
+		case "workload":
+			if !method(w, r, http.MethodGet) {
+				return
+			}
+			timezone := r.URL.Query().Get("timezone")
+			if timezone == "" {
+				timezone = "UTC"
+			}
+			overview, err := s.backup.Workload(r.Context(), timezone)
+			if err != nil {
+				fail(err)
+				return
+			}
+			jsonResponse(w, 200, overview)
 			return
 		case "storages":
 			switch r.Method {
@@ -293,6 +308,18 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 		default:
 			jsonResponse(w, 404, map[string]string{"error": "unknown storage operation"})
 		}
+		return
+	}
+	if len(path) == 2 && path[0] == "snapshots" {
+		if !method(w, r, http.MethodGet) {
+			return
+		}
+		snapshot, err := s.backup.Snapshot(r.Context(), path[1])
+		if err != nil {
+			fail(err)
+			return
+		}
+		jsonResponse(w, 200, snapshot)
 		return
 	}
 	if len(path) == 3 && path[0] == "snapshots" {

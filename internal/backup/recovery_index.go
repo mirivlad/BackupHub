@@ -74,7 +74,7 @@ func ReconcileRecoveryRepository(ctx context.Context, c *catalog.Catalog, id str
 		if err = insertRecoveredSource(ctx, tx, tree.record); err != nil {
 			return 0, err
 		}
-		if err = insertCommittedTree(ctx, tx, id, tree.markerID, tree.record); err != nil {
+		if err = insertCommittedTree(ctx, tx, id, tree.markerID, "", tree.record); err != nil {
 			return 0, fmt.Errorf("import snapshot %s: %w", tree.record.ID, err)
 		}
 	}
@@ -133,7 +133,7 @@ func validRecoveryTree(id string, rec portableRecord, native resticRecoverySnaps
 	if rec.SourceName == "" || utf8.RuneCountInString(rec.SourceName) > 120 || strings.ContainsAny(rec.SourceName, "\x00\r\n") {
 		return false
 	}
-	if _, err := time.Parse(time.RFC3339Nano, rec.At); err != nil {
+	if _, err := time.Parse(time.RFC3339Nano, rec.At); err != nil || (rec.CaptureDurationMS != nil && *rec.CaptureDurationMS < 0) {
 		return false
 	}
 	switch rec.Kind {

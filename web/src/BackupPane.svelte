@@ -3,13 +3,14 @@
  import StoragePane from './StoragePane.svelte';
  import CronRuleEditor from './CronRuleEditor.svelte';
  import SnapshotBrowser from './SnapshotBrowser.svelte';
+ import {formatDuration} from './duration';
  type Section='overview'|'jobs'|'sources'|'storages'|'history'|'runs';
  type Source={id:string;name:string;kind:string;host:string;share:string;path:string;username:string;database:string;access_status?:string;access_hint?:string;auth_method?:string;host_key_fingerprint?:string;};
  type Storage={id:string;name:string;path:string;free_bytes:number;status:string;password_mode:string};
  type Profile={mode:'interval'|'daily'|'weekly'|'cron';interval_value:number;interval_unit:string;days_of_week:string;hour:number;minute:number;timezone:string;first_run:string;cron_expression?:string};
  type Job={id:string;name:string;source_id:string;source_name:string;repository_id:string;schedule:Profile;enabled:boolean;next_run:string;running:boolean;manual_queued:boolean;current_state?:string};
- type Snapshot={id:string;source_id:string;source_name:string;kind:string;created_at:string;verification:string;fidelity:string;consistency:string};
- type Run={id:string;task_id:string;state:string;started_at:string;finished_at?:string;failure_code?:string};
+ type Snapshot={id:string;source_id:string;source_name:string;kind:string;created_at:string;verification:string;fidelity:string;consistency:string;duration_ms?:number};
+ type Run={id:string;task_id:string;state:string;started_at:string;finished_at?:string;failure_code?:string;snapshot_id?:string};
  let {section,role,onNavigate}:{section:Section;role:string;onNavigate:(section:Section)=>void}=$props();
  let sources=$state<Source[]>([]);
  let storages=$state<Storage[]>([]);
@@ -48,9 +49,21 @@
  }
  const fmt=(v:string)=>{if(!v)return '—';const d=new Date(v);return Number.isNaN(d.getTime())?'—':d.toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'});};
  const size=(bytes:number)=>new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(bytes/1073741824)+' ГиБ';
- function sourceType(kind:string){return ({smb:'SMB2/3',smb1:'SMB1',sftp:'SFTP',postgres:'PostgreSQL',postgres_1c:'Postgres Pro для 1С',local:'Локальный каталог'} as Record<string,string>)[kind]??kind;}
+ function sourceType(kind:string){return ({smb:'SMB',smb1:'SMB',sftp:'SFTP',postgres:'PostgreSQL',postgres_1c:'Postgres Pro для 1С',local:'Локальный каталог'} as Record<string,string>)[kind]??kind;}
  function sourcePath(s:Source){return ['smb','smb1'].includes(s.kind)?'//'+s.host+'/'+s.share+(s.path?'/'+s.path:''):['postgres','postgres_1c'].includes(s.kind)?s.host+'/'+s.database:s.kind==='sftp'?s.host+':'+s.path:s.path;}
  function stateLabel(state:string){return ({completed:'Завершено',completed_with_warnings:'С предупреждениями',failed:'Ошибка',queued:'В очереди',preflight:'Проверка',preparing:'Подготовка',capturing:'Копирование',committing:'Сохранение',verifying:'Проверка данных',waiting_for_source:'Ожидание источника',interrupted:'Прервано',cancelled:'Отменено'} as Record<string,string>)[state]??state;}
+ function runTone(state:string){
+  if(state==='completed')return 'good-state';
+  if(['failed','interrupted'].includes(state))return 'error-state';
+  if(['queued','waiting_for_source','completed_with_warnings'].includes(state))return 'warn-state';
+  if(state==='cancelled')return 'muted';
+  return 'active-state';
+ }
+ function runDuration(run:Run){
+  return run.finished_at
+   ?formatDuration(Date.parse(run.finished_at)-Date.parse(run.started_at))
+   :elapsed(run.started_at)||'—';
+ }
  function scheduleText(p:Profile){
   if(!p)return '—';
   const at=String(p.hour).padStart(2,'0')+':'+String(p.minute).padStart(2,'0');
@@ -65,10 +78,17 @@
    source_permission_denied:'Нет прав на чтение источника (ACL / ограничения systemd)',
    ssh_host_key_changed:'Ключ SSH-сервера изменился: соединение заблокировано. Сверьте отпечаток сервера.',
    source_unavailable:'Источник отсутствует или скрыт ограничениями службы',
+   storage_unavailable:'Хранилище недоступно. Проверьте состояние тома и репозитория',
    executor_error:'Ошибка во время копирования (подробности в журнале службы)',
+   capture_failed:'Не удалось прочитать или подготовить данные источника',
+   restic_backup_failed:'Restic не смог записать резервную копию в хранилище',
+   restic_partial_backup:'Restic прочитал не все данные. Снимок не добавлен в историю',
+   restic_verification_failed:'Не удалось проверить целостность данных в хранилище',
+   restic_manifest_failed:'Не удалось сохранить или проверить метаданные снимка',
+   snapshot_catalog_failed:'Снимок записан, но его не удалось добавить в каталог',
    process_restart:'Копирование прервано перезапуском службы'
   };
-  return descriptions[code]??code??'—';
+  return descriptions[code]??(code||'—');
  }
  function schedulePayload():Profile{
   const days=scheduleForm.mode==='weekly'?weekdays.filter(x=>scheduleForm.weekdays.includes(x.id)).map(x=>x.id).join(','):'';
@@ -90,7 +110,7 @@
  }
  function beginEditSource(s:Source){
   editing=true;editingSourceID=s.id;
-  sourceForm={name:s.name,kind:s.kind,host:s.host,share:s.share,path:s.path,username:s.username,password:'',database:s.database,auth_method:s.auth_method||'password',private_key:'',key_passphrase:''};
+  sourceForm={name:s.name,kind:s.kind==='smb1'?'smb':s.kind,host:s.host,share:s.share,path:s.path,username:s.username,password:'',database:s.database,auth_method:s.auth_method||'password',private_key:'',key_passphrase:''};
  }
  function beginEditJob(j:Job){
   editing=true;editingJobID=j.id;previewTimes=[];previewError='';
@@ -146,8 +166,20 @@
     api<{jobs:Job[]}>('/jobs'),
     api<{runs:Run[]}>('/runs')
    ]);
+   const hasNewSnapshot=r.runs.some(next=>next.snapshot_id&&!runs.some(previous=>previous.id===next.id&&previous.snapshot_id===next.snapshot_id));
    jobs=j.jobs;runs=r.runs;
+   if(section==='history'||hasNewSnapshot)await refreshSnapshots();
   }catch{ /* Keep the last known state; manual Refresh gives diagnostics. */ }
+ }
+ async function refreshSnapshots(){
+  snapshots=(await api<{snapshots:Snapshot[]}>('/snapshots')).snapshots;
+ }
+ async function openRunSnapshot(id:string){
+  error='';
+  try{
+   activeSnapshot=await api<Snapshot>('/snapshots/'+encodeURIComponent(id));
+   onNavigate('history');
+  }catch(e){error=e instanceof Error?e.message:'Снимок недоступен';}
  }
  async function runAction(fn:()=>Promise<void>){busy=true;error='';notice='';
   try{await fn();editing=false;await refresh();}catch(e){error=e instanceof Error?e.message:'Операция не выполнена';}
@@ -171,7 +203,7 @@
    editingJobID=null;jobForm={name:'',source_id:'',repository_id:''};previewTimes=[];
   });
  }
- async function jobAction(id:string,op:'run'|'pause'|'resume'){await runAction(async()=>{await api('/jobs/'+encodeURIComponent(id)+'/'+op,actionBody());notice=op==='run'?'Задание поставлено в очередь':op==='pause'?'Задание приостановлено':'Задание включено';});}
+ async function jobAction(id:string,op:'run'|'pause'|'resume'){await runAction(async()=>{await api('/jobs/'+encodeURIComponent(id)+'/'+op,actionBody());notice=op==='run'?'Запуск в очереди. Результат появится в журнале выполнения.':op==='pause'?'Задание приостановлено':'Задание включено';});}
  function weekdayToggle(day:number,checked:boolean){scheduleForm.weekdays=checked?[...scheduleForm.weekdays,day]:scheduleForm.weekdays.filter(n=>n!==day);}
  onMount(()=>{
   scheduleForm.timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC';
@@ -186,7 +218,11 @@
   void scheduleKey;
   previewTimes=[];previewError='';
  });
- $effect(()=>{if(section){editing=false;}});
+ $effect(()=>{
+  editing=false;
+  notice='';
+  if(section==='history')void refreshSnapshots().catch(e=>{error=e instanceof Error?e.message:'История недоступна';});
+ });
 </script>
 
 <section class="work-area">
@@ -213,12 +249,12 @@
    <section class="detail-card">
     <div class="section-head"><h2>Задания</h2><button class="text-button" onclick={()=>onNavigate('jobs')}>Все задания →</button></div>
     {#if jobs.length===0}<div class="empty-state"><strong>Пока нет заданий</strong><p>Добавьте источник, затем создайте задание с хранилищем и периодичностью.</p><button class="outline" onclick={()=>onNavigate('jobs')}>Перейти к заданиям</button></div>
-    {:else}<div class="compact-list">{#each jobs.slice(0,6) as j(j.id)}<div class="compact-row"><div><strong>{j.name}</strong><small>{j.source_name} · {storages.find(s=>s.id===j.repository_id)?.name??j.repository_id}</small></div><span class:muted={!j.enabled} class="status">{j.enabled?'Активно':'Пауза'}</span></div>{/each}</div>{/if}
+    {:else}<div class="compact-list">{#each jobs.slice(0,6) as j(j.id)}<div class="compact-row"><div><strong>{j.name}</strong><small>{j.source_name} · {storages.find(s=>s.id===j.repository_id)?.name??j.repository_id}</small></div><span class:muted={!j.enabled} class:good-state={j.enabled} class="status">{j.enabled?'Активно':'Пауза'}</span></div>{/each}</div>{/if}
    </section>
    <section class="detail-card">
     <div class="section-head"><h2>Последние запуски</h2><button class="text-button" onclick={()=>onNavigate('runs')}>Весь журнал →</button></div>
     {#if runs.length===0}<div class="empty-state"><strong>Запусков ещё не было</strong><p>Здесь появится история выполнения заданий.</p></div>
-    {:else}<div class="compact-list">{#each runs.slice(0,6) as r(r.id)}<div class="compact-row"><div><strong>{jobs.find(j=>j.id===r.task_id)?.name??r.task_id.slice(0,8)}</strong><small>{fmt(r.started_at)}</small></div><span class:error-state={['failed','interrupted'].includes(r.state)} class:good-state={r.state==='completed'} class="status">{stateLabel(r.state)}</span></div>{/each}</div>{/if}
+    {:else}<div class="compact-list">{#each runs.slice(0,6) as r(r.id)}<div class="compact-row"><div><strong>{jobs.find(j=>j.id===r.task_id)?.name??r.task_id.slice(0,8)}</strong><small>{fmt(r.started_at)}</small></div><span class={'status '+runTone(r.state)}>{stateLabel(r.state)}</span></div>{/each}</div>{/if}
    </section>
   </div>
  {:else if section==='sources'}
@@ -227,7 +263,7 @@
     <div class="section-head"><h2>{editingSourceID?'Редактирование источника':'Новый источник'}</h2></div>
     <form class="form-grid" onsubmit={(e)=>{e.preventDefault();void saveSource();}}>
      <label>Название<input bind:value={sourceForm.name} maxlength="120" required placeholder="Документы"/></label>
-     <label>Тип источника<select bind:value={sourceForm.kind}><option value="smb">Сетевая папка SMB2/3</option><option value="smb1">Сетевая папка SMB1</option><option value="sftp">Сервер Linux · SSH/SFTP</option><option value="local">Локальный каталог</option><option value="postgres">PostgreSQL</option><option value="postgres_1c">Postgres Pro для 1С</option></select></label>
+     <label>Тип источника<select bind:value={sourceForm.kind}><option value="smb">Сетевая папка SMB</option><option value="sftp">Сервер Linux · SSH/SFTP</option><option value="local">Локальный каталог</option><option value="postgres">PostgreSQL</option><option value="postgres_1c">Postgres Pro для 1С</option></select></label>
      {#if sourceForm.kind!=='local'}
       <label>Адрес сервера<input bind:value={sourceForm.host} required placeholder="server.example.com"/></label>
       <label>Пользователь<input bind:value={sourceForm.username} autocomplete="off" required/></label>
@@ -263,10 +299,10 @@
        </label>
       {/if}
      {/if}
-     {#if ['smb','smb1'].includes(sourceForm.kind)}
+     {#if sourceForm.kind==='smb'}
       <label>Общая папка<input bind:value={sourceForm.share} required placeholder="Shared"/></label>
       <label>Подкаталог<input bind:value={sourceForm.path} placeholder="Documents"/></label>
-      {#if sourceForm.kind==='smb1'}<p class="helper full">Выбирайте SMB1 для устройств, которым нужен этот протокол. Подключение требует NTLMv2 и подписывания SMB.</p>{/if}
+      <p class="helper full">Версия определяется автоматически. Если сервер поддерживает SMB2 или SMB3, BackupHub использует современный протокол. Для сервера только с SMB1 нужны NTLMv2 и подписывание.</p>
      {:else if ['postgres','postgres_1c'].includes(sourceForm.kind)}
       <label>База данных<input bind:value={sourceForm.database} required/></label>
       {#if sourceForm.kind==='postgres_1c'}<p class="helper full">Данные public.config сохраняются отдельным двоичным потоком. Восстановление выполняется в совместимую отдельную базу.</p>{/if}
@@ -356,7 +392,7 @@
      <td class="wrap-cell">{scheduleText(j.schedule)}</td>
      <td>{j.enabled?fmt(j.next_run):'—'}</td>
      <td>
-      <span class:muted={!j.enabled} class="status">{j.running?stateLabel(j.current_state||'queued'):j.manual_queued?'Запуск в очереди':j.enabled?'По расписанию':'Пауза'}</span>
+      <span class:muted={!j.enabled} class:active-state={j.running} class:warn-state={j.enabled&&!j.running&&j.manual_queued} class:good-state={j.enabled&&!j.running&&!j.manual_queued} class="status">{j.running?stateLabel(j.current_state||'queued'):j.manual_queued?'Запуск в очереди':j.enabled?'По расписанию':'Пауза'}</span>
       {#if j.running&&activeRun(j)}
        <small class="subline">Выполняется: {elapsed(activeRun(j)!.started_at)}</small>
       {/if}
@@ -373,12 +409,12 @@
  {:else if section==='runs'}
   <section class="detail-card"><div class="section-head"><h2>Последние запуски <span class="count">{runs.length}</span></h2></div>
    {#if runs.length===0}<div class="empty-state"><strong>Журнал пуст</strong><p>Результаты запусков появятся здесь.</p></div>
-   {:else}<div class="table-scroll"><table><thead><tr><th>Начало</th><th>Задание</th><th>Результат</th><th>Завершение</th><th>Код ошибки</th></tr></thead><tbody>{#each runs as r(r.id)}<tr><td>{fmt(r.started_at)}</td><td>{jobs.find(j=>j.id===r.task_id)?.name??r.task_id.slice(0,8)}</td><td><span class:error-state={['failed','interrupted'].includes(r.state)} class:good-state={r.state==='completed'} class="status">{stateLabel(r.state)}</span></td><td>{fmt(r.finished_at??'')}</td><td>{failureText(r.failure_code||'')}</td></tr>{/each}</tbody></table></div>{/if}
+   {:else}<div class="table-scroll"><table><thead><tr><th>Начало</th><th>Задание</th><th>Результат</th><th>Завершение</th><th>Длительность</th><th>Подробности</th></tr></thead><tbody>{#each runs as r(r.id)}<tr><td>{fmt(r.started_at)}</td><td>{jobs.find(j=>j.id===r.task_id)?.name??r.task_id.slice(0,8)}</td><td><span class={'status '+runTone(r.state)}>{stateLabel(r.state)}</span></td><td>{fmt(r.finished_at??'')}</td><td>{runDuration(r)}</td><td class="run-detail">{#if r.state==='completed'&&r.snapshot_id}<button class="text-button" onclick={()=>void openRunSnapshot(r.snapshot_id!)}>Открыть снимок</button>{:else}{failureText(r.failure_code||'')}{/if}</td></tr>{/each}</tbody></table></div>{/if}
   </section>
  {:else if section==='history'}
   <section class="detail-card"><div class="section-head"><h2>Снимки <span class="count">{snapshots.length}</span></h2></div>
    {#if snapshots.length===0}<div class="empty-state"><strong>Нет резервных копий</strong><p>После успешного выполнения задания здесь появится первый снимок.</p></div>
-   {:else}<div class="table-scroll"><table><thead><tr><th>Дата</th><th>Источник</th><th>Проверка</th><th></th></tr></thead><tbody>{#each snapshots as s(s.id)}<tr><td>{fmt(s.created_at)}</td><td><strong>{s.source_name}</strong></td><td><span class:good-state={s.verification==='data_sha256_verified'} class:error-state={s.verification!=='data_sha256_verified'} class="status">{s.verification==='data_sha256_verified'?'Проверено':'Требует проверки'}</span></td><td><button class="outline" disabled={busy} onclick={()=>activeSnapshot=s}>Открыть снимок</button></td></tr>{/each}</tbody></table></div>{/if}
+   {:else}<div class="table-scroll"><table><thead><tr><th>Дата</th><th>Источник</th><th>Длительность</th><th>Проверка</th><th></th></tr></thead><tbody>{#each snapshots as s(s.id)}<tr><td>{fmt(s.created_at)}</td><td><strong>{s.source_name}</strong></td><td>{formatDuration(s.duration_ms)}</td><td><span class:good-state={s.verification==='data_sha256_verified'} class:warn-state={s.verification!=='data_sha256_verified'} class="status">{s.verification==='data_sha256_verified'?'Проверено':'Требует проверки'}</span></td><td><button class="outline" disabled={busy} onclick={()=>activeSnapshot=s}>Открыть снимок</button></td></tr>{/each}</tbody></table></div>{/if}
   </section>
   {#if activeSnapshot}
    <section class="detail-card">
@@ -433,11 +469,14 @@
  .action-cell{white-space:nowrap;text-align:right}
  .action-cell button+button{margin-left:10px}
  .helper{font-size:12px;color:var(--muted)}
- .status{display:inline-flex;align-items:center;white-space:nowrap;border-radius:7px;padding:5px 10px;color:#256348;background:#eaf7f0;font-size:11px;font-weight:700}
- .status.muted{color:#788394;background:#f1f3f7}
- .status.error-state{color:#a84242;background:#fcecec}
- .status.good-state{color:#256348;background:#eaf7f0}
- .danger-text{color:#b44343}
+ .run-detail{min-width:145px;white-space:normal}
+ .status{display:inline-flex;align-items:center;white-space:nowrap;border-radius:7px;padding:5px 10px;color:#fff;background:#48576e;font-size:11px;font-weight:750}
+ .status.muted{background:#48576e}
+ .status.error-state{background:#a22230}
+ .status.good-state{background:#146541}
+ .status.warn-state{background:#865010}
+ .status.active-state{background:#2252a0}
+ .danger-text{color:#a22230}
  @media(max-width:1100px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.two-column{grid-template-columns:1fr}}
  @media(max-width:700px){.workspace-header{align-items:flex-start;flex-direction:column}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.form-grid{grid-template-columns:1fr}.metric{padding:15px}}
 </style>

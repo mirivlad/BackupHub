@@ -89,6 +89,11 @@ func TestFileBackupVersionHistoryAndZipRestore(t *testing.T) {
 		t.Fatalf("snapshots %v count=%d", err, len(snapshots))
 	}
 	original := snapshots[0]
+	runs, err := svc.RecentRuns(ctx)
+	if err != nil || len(runs) != 1 || runs[0].State != "completed" || runs[0].SnapshotID != original.ID ||
+		runs[0].FinishedAt == nil || original.DurationMS == nil || *original.DurationMS != runs[0].FinishedAt.Sub(runs[0].StartedAt).Milliseconds() {
+		t.Fatalf("completed run must link its timed snapshot: %#v, %#v, %v", runs, original, err)
+	}
 	files, err := svc.Files(ctx, original.ID)
 	if err != nil {
 		t.Fatal(err)

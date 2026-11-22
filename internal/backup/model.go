@@ -55,6 +55,7 @@ type Snapshot struct {
 	Verification string `json:"verification"`
 	Fidelity     string `json:"fidelity"`
 	Consistency  string `json:"consistency"`
+	DurationMS   *int64 `json:"duration_ms,omitempty"`
 }
 type File struct {
 	Path     string    `json:"path"`
@@ -148,6 +149,10 @@ func safeFailure(err error) string {
 	}
 	if errors.Is(err, scheduler.ErrSourcePermissionDenied) {
 		return "source_permission_denied"
+	}
+	var failure *scheduler.BackupFailure
+	if errors.As(err, &failure) {
+		return failure.Code
 	}
 	if errors.Is(err, scheduler.ErrSourceUnavailable) {
 		return "source_unavailable"

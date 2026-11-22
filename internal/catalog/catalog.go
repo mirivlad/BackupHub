@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 11
+const SchemaVersion = 12
 
 // Catalog stores operational state; the portable repository manifest must
 // remain sufficient for rebuilding the snapshot index after database loss.
@@ -353,6 +353,30 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if !columns["manual_pending"] {
 			if _, err = tx.ExecContext(ctx, `ALTER TABLE schedule_entries ADD COLUMN manual_pending INTEGER NOT NULL DEFAULT 0 CHECK(manual_pending IN (0,1))`); err != nil {
 				return fmt.Errorf("v11 manual-run migration: %w", err)
+			}
+		}
+	}
+	if version < 12 {
+		for _, column := range []struct{ name, definition string }{
+			{"run_id", "TEXT REFERENCES schedule_runs(id)"},
+			{"capture_duration_ms", "INTEGER CHECK(capture_duration_ms >= 0)"},
+		} {
+			var present bool
+			if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pragma_table_info('file_snapshots') WHERE name=?)", column.name).Scan(&present); err != nil {
+				return err
+			}
+			if !present {
+				if _, err = tx.ExecContext(ctx, "ALTER TABLE file_snapshots ADD COLUMN "+column.name+" "+column.definition); err != nil {
+					return fmt.Errorf("v12 snapshot migration: %w", err)
+				}
+			}
+		}
+		for _, statement := range []string{
+			"CREATE UNIQUE INDEX IF NOT EXISTS file_snapshots_by_run ON file_snapshots(run_id)",
+			"UPDATE sources SET kind='smb' WHERE kind='smb1'",
+		} {
+			if _, err = tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("v12 snapshot and SMB migration: %w", err)
 			}
 		}
 	}

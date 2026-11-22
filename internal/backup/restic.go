@@ -425,17 +425,18 @@ const (
 )
 
 type portableRecord struct {
-	Format       string `json:"format"`
-	ID           string `json:"id"`
-	SourceID     string `json:"source_id"`
-	SourceName   string `json:"source_name"`
-	Kind         string `json:"kind"`
-	Root         string `json:"root"`
-	ResticID     string `json:"restic_id"`
-	At           string `json:"at"`
-	DataVerified bool   `json:"data_verified"`
-	Consistency  string `json:"consistency"`
-	Fidelity     string `json:"fidelity"`
+	Format            string `json:"format"`
+	ID                string `json:"id"`
+	SourceID          string `json:"source_id"`
+	SourceName        string `json:"source_name"`
+	Kind              string `json:"kind"`
+	Root              string `json:"root"`
+	ResticID          string `json:"restic_id"`
+	At                string `json:"at"`
+	DataVerified      bool   `json:"data_verified"`
+	Consistency       string `json:"consistency"`
+	Fidelity          string `json:"fidelity"`
+	CaptureDurationMS *int64 `json:"capture_duration_ms,omitempty"`
 }
 
 func (r *repository) commit(ctx context.Context, rec portableRecord) (string, error) {

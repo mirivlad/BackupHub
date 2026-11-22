@@ -1,5 +1,5 @@
 :root{
- --text:#172a43;--muted:#748298;--line:#e5eaf1;--primary:#3067c8;--primary-hover:#2455ae;--shadow:0 2px 16px rgba(28,51,90,.025);
+ --text:#13243b;--muted:#4e6078;--line:#d8e0eb;--primary:#184faf;--primary-hover:#103b89;--shadow:0 2px 16px rgba(28,51,90,.025);
  font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
  color:var(--text);background:#f6f8fc;font-synthesis:none;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased
 }
@@ -25,17 +25,17 @@ p{line-height:1.5}
 .brand-caption{display:block;font-size:10px;color:#8093b0;margin-top:4px}
 .sidebar .wordmark{color:#fff}
 .sidebar-navigation{display:flex;flex-direction:column}
-.side-section{font-weight:750;color:#667d9d;letter-spacing:.12em;font-size:10px;margin:18px 14px 11px}
+.side-section{font-weight:750;color:#a0b6d4;letter-spacing:.12em;font-size:10px;margin:18px 14px 11px}
 .nav-button{border:0;display:flex;align-items:center;gap:12px;border-radius:9px;min-height:42px;padding:11px 13px;width:100%;text-align:left;background:transparent;color:#a4b4ca;font-size:13px;font-weight:550}
 .nav-button svg{flex:0 0 auto}
 .nav-button:hover{color:#f7faff;background:#202f47}
-.nav-button.active{background:#263e64;color:#fff;font-weight:700}
+.nav-button.active{background:#194ea8;color:#fff;font-weight:700}
 .nav-button.active svg{color:#9bc0ff}
 .sidebar-bottom{display:flex;align-items:center;gap:9px;border-top:1px solid #2a3b52;margin:auto 10px 0;padding:24px 4px 4px;color:#9cb3cc;font-size:12px}
 .side-status-dot{width:8px;height:8px;background:#57be8d;border-radius:100%}
 .content-shell{min-width:0;display:flex;flex-direction:column}
 .topbar{height:74px;background:#fff;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;padding:0 38px;gap:15px}
-.breadcrumbs{color:#7e8ba0;font-size:12px;font-weight:600}
+.breadcrumbs{color:var(--muted);font-size:12px;font-weight:600}
 .breadcrumbs span{color:#bac4d1;margin:0 8px}
 .topbar-user{display:flex;align-items:center;gap:10px}
 .user-avatar{width:34px;height:34px;border-radius:10px;background:#edf3fc;color:#2b63bd;display:grid;place-items:center;font-weight:700}
@@ -57,7 +57,7 @@ p{line-height:1.5}
 .editor-card{border-color:#c7d8f2;box-shadow:0 5px 25px #1e61bd0b}
 .table-scroll{width:100%;overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:13px;text-align:left}
-th{color:#8390a3;font-weight:750;font-size:11px;letter-spacing:.025em;background:#fafbfd}
+th{color:#4e6078;font-weight:750;font-size:11px;letter-spacing:.025em;background:#fafbfd}
 th,td{border-bottom:1px solid #edf0f5;padding:14px 13px;white-space:nowrap;text-align:left}
 tbody tr:last-child td{border-bottom:0}
 tbody tr:hover{background:#fbfcfe}
@@ -85,4 +85,4 @@ label{color:var(--text)}
 .loading-card .brand-icon{margin:0 auto 18px}
 .instance-id{display:block;font-size:12px;word-break:break-all;background:#f5f7fb;padding:10px}
 @media(max-width:1100px){.dashboard{padding:26px 25px 50px}.topbar{padding:0 25px}}
-@media(max-width:750px){.shell{display:flex;flex-direction:column}.sidebar{position:static;height:auto;padding:14px 12px;overflow:visible}.sidebar .brandline{margin:1px 8px 10px}.sidebar-navigation{flex-direction:row;flex-wrap:wrap;gap:4px}.side-section,.sidebar-bottom{display:none}.nav-button{width:auto;min-height:38px;padding:8px 10px}.nav-button span{display:none}.nav-button svg{width:22px;height:22px}.topbar{height:63px;padding:0 16px}.dashboard{padding:23px 16px 50px}.detail-card{padding:17px}.workspace-header,.heading{align-items:flex-start;flex-direction:column;gap:15px}.user-title{display:none}.auth-card{padding:25px}}
+@media(max-width:750px){.shell{display:flex;flex-direction:column}.sidebar{position:static;height:auto;padding:14px 12px;overflow:visible}.sidebar .brandline{margin:1px 8px 10px}.sidebar-navigation{flex-direction:row;flex-wrap:wrap;gap:4px}.side-section,.sidebar-bottom{display:none}.nav-button{width:auto;min-height:38px;padding:8px 9px;gap:6px}.nav-button span{font-size:11px}.nav-button svg{width:17px;height:17px}.topbar{height:63px;padding:0 16px}.dashboard{padding:23px 16px 50px}.detail-card{padding:17px}.workspace-header,.heading{align-items:flex-start;flex-direction:column;gap:15px}.user-title{display:none}.auth-card{padding:25px}}

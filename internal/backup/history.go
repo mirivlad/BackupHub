@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -13,8 +14,13 @@ import (
 	"time"
 )
 
+const snapshotQuery = `SELECT f.snapshot_id,f.source_id,s.display_name,s.kind,f.restic_id,f.root_path,f.committed_at,f.verification,
+ f.fidelity,f.consistency,sp.repository_id,f.capture_duration_ms,r.started_at,r.finished_at
+ FROM file_snapshots f JOIN sources s ON f.source_id=s.id JOIN snapshots sp ON sp.id=f.snapshot_id
+ LEFT JOIN schedule_runs r ON r.id=f.run_id`
+
 func (s *Service) ListSnapshots(ctx context.Context, sourceID string) ([]Snapshot, error) {
-	query := `SELECT f.snapshot_id,f.source_id,s.display_name,s.kind,f.restic_id,f.root_path,f.committed_at,f.verification,f.fidelity,f.consistency,sp.repository_id FROM file_snapshots f JOIN sources s ON f.source_id=s.id JOIN snapshots sp ON sp.id=f.snapshot_id`
+	query := snapshotQuery
 	args := []any{}
 	if sourceID != "" {
 		if !safeID(sourceID) {
@@ -31,30 +37,49 @@ func (s *Service) ListSnapshots(ctx context.Context, sourceID string) ([]Snapsho
 	defer rows.Close()
 	snaps := []Snapshot{}
 	for rows.Next() {
-		var v Snapshot
-		if err = rows.Scan(&v.ID, &v.SourceID, &v.SourceName, &v.Kind, &v.ResticID, &v.Root, &v.At, &v.Verification, &v.Fidelity, &v.Consistency,&v.RepositoryID); err != nil {
+		v, err := scanSnapshot(rows)
+		if err != nil {
 			return nil, err
 		}
 		snaps = append(snaps, v)
 	}
 	return snaps, rows.Err()
 }
-func (s *Service) snapshot(ctx context.Context, id string) (Snapshot, error) {
-	var snap Snapshot
+func (s *Service) Snapshot(ctx context.Context, id string) (Snapshot, error) {
 	if !safeID(id) {
-		return snap, errors.New("invalid snapshot ID")
+		return Snapshot{}, errors.New("invalid snapshot ID")
 	}
-	err := s.catalog.DB.QueryRowContext(ctx, `SELECT f.snapshot_id,f.source_id,s.display_name,s.kind,f.restic_id,f.root_path,f.committed_at,f.verification,f.fidelity,f.consistency,sp.repository_id FROM file_snapshots f JOIN sources s ON f.source_id=s.id JOIN snapshots sp ON sp.id=f.snapshot_id WHERE f.snapshot_id=?`, id).Scan(&snap.ID, &snap.SourceID, &snap.SourceName, &snap.Kind, &snap.ResticID, &snap.Root, &snap.At, &snap.Verification, &snap.Fidelity, &snap.Consistency,&snap.RepositoryID)
-	return snap, err
+	return scanSnapshot(s.catalog.DB.QueryRowContext(ctx, snapshotQuery+` WHERE f.snapshot_id=?`, id))
+}
+
+func scanSnapshot(row interface{ Scan(...any) error }) (Snapshot, error) {
+	var s Snapshot
+	var duration sql.NullInt64
+	var started, finished sql.NullString
+	if err := row.Scan(&s.ID, &s.SourceID, &s.SourceName, &s.Kind, &s.ResticID, &s.Root, &s.At, &s.Verification,
+		&s.Fidelity, &s.Consistency, &s.RepositoryID, &duration, &started, &finished); err != nil {
+		return s, err
+	}
+	start, startErr := time.Parse(time.RFC3339Nano, started.String)
+	end, endErr := time.Parse(time.RFC3339Nano, finished.String)
+	if startErr == nil && endErr == nil && !end.Before(start) {
+		elapsed := end.Sub(start).Milliseconds()
+		s.DurationMS = &elapsed
+	} else if duration.Valid {
+		s.DurationMS = &duration.Int64
+	}
+	return s, nil
 }
 func (s *Service) Files(ctx context.Context, id string) ([]File, error) {
-	snap, err := s.snapshot(ctx, id)
+	snap, err := s.Snapshot(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	repo,err:=s.repositoryFor(ctx,snap.RepositoryID)
- if err!=nil{return nil,err}
- entries, err := repo.listTree(ctx, snap.ResticID)
+	repo, err := s.repositoryFor(ctx, snap.RepositoryID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := repo.listTree(ctx, snap.ResticID)
 	if err != nil {
 		return nil, err
 	}
@@ -74,13 +99,15 @@ func (s *Service) Files(ctx context.Context, id string) ([]File, error) {
 	return out, nil
 }
 func (s *Service) Download(ctx context.Context, id string, selections []string, single bool, w http.ResponseWriter) error {
-	snap, err := s.snapshot(ctx, id)
+	snap, err := s.Snapshot(ctx, id)
 	if err != nil {
 		return err
 	}
-	repo,err:=s.repositoryFor(ctx,snap.RepositoryID)
- if err!=nil{return err}
- if single {
+	repo, err := s.repositoryFor(ctx, snap.RepositoryID)
+	if err != nil {
+		return err
+	}
+	if single {
 		if len(selections) != 1 {
 			return errors.New("single download requires exactly one path")
 		}

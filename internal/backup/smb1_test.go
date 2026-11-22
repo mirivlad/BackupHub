@@ -29,7 +29,7 @@ func TestSMB1CaptureAndRestore(t *testing.T) {
 	requireIntegrationRestic(t)
 	ctx := context.Background()
 	service := serviceFixture(t)
-	input := CreateSource{Name: "SMB1 fixture", Kind: smb1Kind, Host: host, Share: "fixture",
+	input := CreateSource{Name: "SMB1 fixture", Kind: "smb", Host: host, Share: "fixture",
 		Path: "subfolder", Username: os.Getenv("BACKUPHUB_TEST_SMB1_USER"), Password: os.Getenv("BACKUPHUB_TEST_SMB1_PASSWORD")}
 	source, err := service.Create(ctx, input)
 	if err != nil {
@@ -54,8 +54,10 @@ func TestSMB1CaptureAndRestore(t *testing.T) {
 		t.Fatalf("unexpected restored SMB1 data: %q %v", got, err)
 	}
 	input.Path = "missing"
-	if _, err = service.UpdateSource(ctx, source.ID, input); err != nil {
-		t.Fatal(err)
+	input.Kind = smb1Kind
+	input.AuthMethod, input.Password = "password", ""
+	if updated, err := service.UpdateSource(ctx, source.ID, input); err != nil || updated.Kind != "smb" {
+		t.Fatalf("legacy API alias should preserve the unified SMB source: %#v %v", updated, err)
 	}
 	if err = service.Manual(ctx, job.ID); err != nil {
 		t.Fatal(err)
@@ -65,5 +67,27 @@ func TestSMB1CaptureAndRestore(t *testing.T) {
 	}
 	if history, err = service.ListSnapshots(ctx, source.ID); err != nil || len(history) != 1 {
 		t.Fatalf("missing directory changed history: %v %v", history, err)
+	}
+	runs, err := service.RecentRuns(ctx)
+	if err != nil || len(runs) != 2 || runs[0].State != "failed" || runs[0].FailureCode != "capture_failed" || runs[0].SnapshotID != "" {
+		t.Fatalf("failed capture must have a diagnostic and no snapshot: %#v %v", runs, err)
+	}
+}
+
+func TestSMBPrefersModernDialect(t *testing.T) {
+	host := os.Getenv("BACKUPHUB_TEST_SMB_DUAL_HOST")
+	if host == "" {
+		t.Skip("no dual-dialect SMB fixture configured")
+	}
+	// A server that offers both protocols must work without the SMB1 client.
+	t.Setenv("PATH", t.TempDir())
+	target := privateDir(t)
+	cfg := Settings{Host: host, Share: "fixture", Path: "subfolder", Username: os.Getenv("BACKUPHUB_TEST_SMB1_USER")}
+	if err := captureSMB(context.Background(), cfg, os.Getenv("BACKUPHUB_TEST_SMB1_PASSWORD"), target); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(target, "nested.txt"))
+	if err != nil || string(data) != "fixture in subfolder\n" {
+		t.Fatalf("unexpected data from modern SMB: %q %v", data, err)
 	}
 }

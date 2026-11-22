@@ -24,7 +24,7 @@ BackupHub: REST API / RBAC / audit / export / restore
 ## Код
 
 - `internal/domain` — переносимые типы снимка, проверка комплектности, состояния и чистый dry-run ротации.
-- `internal/catalog` — SQLite/WAL, транзакционные миграции, схема v11 и постоянный instance UUID.
+- `internal/catalog` — SQLite/WAL, транзакционные миграции, схема v12 и постоянный instance UUID.
 - `internal/auth` — Argon2id, локальный bootstrap администратора, сессии, базовый аудит.
 - `internal/vault` — AES-256-GCM, ключ вне БД, отказ при утере ключа или повреждении данных.
 - `internal/backup` — рабочий контур источников, Restic, копирования, истории и восстановления. Файловые снимки используют переносимый манифест дерева.

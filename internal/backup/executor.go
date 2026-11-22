@@ -5,14 +5,20 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/mirivlad/BackupHub/internal/domain"
-	"github.com/mirivlad/BackupHub/internal/scheduler"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/mirivlad/BackupHub/internal/domain"
+	"github.com/mirivlad/BackupHub/internal/scheduler"
 )
 
 func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(domain.JobState) error) error {
+	started := t.StartedAt
+	if started.IsZero() {
+		started = time.Now()
+	}
 	source, settings, ref, err := s.source(ctx, t.DatasetID)
 	if err != nil {
 		return err
@@ -26,7 +32,7 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	}
 	destination, err := s.repositoryFor(ctx, repoID)
 	if err != nil {
-		return fmt.Errorf("%w: storage offline", scheduler.ErrSourceUnavailable)
+		return &scheduler.BackupFailure{Code: "storage_unavailable", Err: errors.Join(scheduler.ErrSourceUnavailable, err)}
 	}
 	if source.Kind == "local" {
 		status, _ := assessLocalAccess(settings.Path)
@@ -65,7 +71,7 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	root, cleanup, err := s.capture(ctx, source.ID, source.Kind, settings, password, staging)
 	password = ""
 	if err != nil {
-		return err
+		return &scheduler.BackupFailure{Code: "capture_failed", Err: err}
 	}
 	defer cleanup()
 	if err = report(domain.JobCommitting); err != nil {
@@ -73,20 +79,27 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	}
 	native, err := destination.treeBackup(ctx, root, source.ID)
 	if err != nil {
-		return err
+		code := "restic_backup_failed"
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+			code = "restic_partial_backup"
+		}
+		return &scheduler.BackupFailure{Code: code, Err: err}
 	}
 	// Full data verification is a separate, potentially lengthy phase.
 	if err = report(domain.JobVerifying); err != nil {
 		return err
 	}
 	if err = destination.check(ctx, true); err != nil {
-		return fmt.Errorf("restic full data verification failed: %w", err)
+		return &scheduler.BackupFailure{Code: "restic_verification_failed", Err: fmt.Errorf("restic full data verification failed: %w", err)}
 	}
 	id, err := randomID()
 	if err != nil {
 		return err
 	}
-	at := time.Now().UTC().Format(time.RFC3339Nano)
+	captured := time.Now()
+	at := captured.UTC().Format(time.RFC3339Nano)
+	duration := max(int64(0), captured.Sub(started).Milliseconds())
 	consistency := "best_effort"
 	fidelity := "basic_metadata"
 	if source.Kind == "postgres" {
@@ -100,29 +113,33 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if source.Kind == "smb" || source.Kind == smb1Kind {
 		fidelity = "content_and_timestamps"
 	}
-	marker := portableRecord{ID: id, SourceID: source.ID, SourceName: source.Name, Kind: source.Kind, Root: root, ResticID: native, At: at, DataVerified: true, Consistency: consistency, Fidelity: fidelity}
+	marker := portableRecord{ID: id, SourceID: source.ID, SourceName: source.Name, Kind: source.Kind, Root: root, ResticID: native, At: at, DataVerified: true, Consistency: consistency, Fidelity: fidelity, CaptureDurationMS: &duration}
 	markerID, err := destination.commit(ctx, marker)
 	if err != nil {
-		return err
+		return &scheduler.BackupFailure{Code: "restic_manifest_failed", Err: err}
 	}
 	tx, err := s.catalog.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return &scheduler.BackupFailure{Code: "snapshot_catalog_failed", Err: err}
 	}
 	defer tx.Rollback()
-	if err = insertCommittedTree(ctx, tx, repoID, markerID, marker); err != nil {
-		return err
+	if err = insertCommittedTree(ctx, tx, repoID, markerID, t.RunID, marker); err != nil {
+		return &scheduler.BackupFailure{Code: "snapshot_catalog_failed", Err: err}
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return &scheduler.BackupFailure{Code: "snapshot_catalog_failed", Err: err}
+	}
+	return nil
 }
 
-func insertCommittedTree(ctx context.Context, tx *sql.Tx, repoID, markerID string, rec portableRecord) error {
+func insertCommittedTree(ctx context.Context, tx *sql.Tx, repoID, markerID, runID string, rec portableRecord) error {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO snapshots(id,dataset_id,repository_id,state,manifest_ref,created_at) VALUES(?,?,?,?,?,?)`,
 		rec.ID, rec.SourceID, repoID, "committed", markerID, rec.At); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO file_snapshots(snapshot_id,source_id,restic_id,root_path,committed_at,verification,fidelity,consistency) VALUES(?,?,?,?,?,?,?,?)`,
-		rec.ID, rec.SourceID, rec.ResticID, rec.Root, rec.At, "data_sha256_verified", rec.Fidelity, rec.Consistency)
+	_, err := tx.ExecContext(ctx, `INSERT INTO file_snapshots(snapshot_id,source_id,restic_id,root_path,committed_at,verification,fidelity,consistency,run_id,capture_duration_ms)
+	 VALUES(?,?,?,?,?,?,?,?,NULLIF(?,''),?)`,
+		rec.ID, rec.SourceID, rec.ResticID, rec.Root, rec.At, "data_sha256_verified", rec.Fidelity, rec.Consistency, runID, rec.CaptureDurationMS)
 	return err
 }
 func (s *Service) capture(ctx context.Context, sourceID, kind string, settings Settings, password, staging string) (string, func(), error) {
@@ -150,10 +167,8 @@ func (s *Service) capture(ctx context.Context, sourceID, kind string, settings S
 		return "", func() {}, err
 	}
 	switch kind {
-	case "smb":
+	case "smb", smb1Kind:
 		err = captureSMB(ctx, settings, password, root)
-	case smb1Kind:
-		err = captureSMB1(ctx, settings, password, root)
 	case "sftp":
 		err = s.captureSFTP(ctx, sourceID, settings, password, root)
 	case "postgres":

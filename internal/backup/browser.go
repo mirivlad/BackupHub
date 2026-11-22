@@ -48,7 +48,7 @@ func (s *Service) browseSnapshot(ctx context.Context, snapshotID, directory, sea
 	if search != "" && utf8.RuneCountInString(search) < 2 {
 		return page, ErrBrowseInvalidRequest
 	}
-	snap, err := s.snapshot(ctx, snapshotID)
+	snap, err := s.Snapshot(ctx, snapshotID)
 	if err != nil {
 		return page, err
 	}

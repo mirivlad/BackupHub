@@ -17,7 +17,7 @@ func (s *Service) RestoreToNewDirectory(ctx context.Context, id string, selectio
 	if len(selections) > 64 {
 		return "", errors.New("too many selections")
 	}
-	snap, err := s.snapshot(ctx, id)
+	snap, err := s.Snapshot(ctx, id)
 	if err != nil {
 		return "", err
 	}

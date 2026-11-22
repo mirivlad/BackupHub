@@ -83,12 +83,12 @@ jobs:
           if file dist/backuphub | grep -q 'dynamically linked'; then echo 'DEB binary must not depend on the CI runner glibc'; exit 1; fi
       - name: Create and inspect .deb
         run: |
-          sh packaging/debian/build.sh 0.4.0
-          dpkg-deb -c dist/backuphub_0.4.0_amd64.deb | grep '/usr/share/backuphub/web/index.html'
-          dpkg-deb -c dist/backuphub_0.4.0_amd64.deb | grep '/lib/systemd/system/backuphub.service'
+          sh packaging/debian/build.sh 0.5.0
+          dpkg-deb -c dist/backuphub_0.5.0_amd64.deb | grep '/usr/share/backuphub/web/index.html'
+          dpkg-deb -c dist/backuphub_0.5.0_amd64.deb | grep '/lib/systemd/system/backuphub.service'
       - name: Install Debian package and test HTTPS service
         run: |
-          sudo apt-get install -y ./dist/backuphub_0.4.0_amd64.deb
+          sudo apt-get install -y ./dist/backuphub_0.5.0_amd64.deb
           # postinst starts the daemon and initializes Restic; do not interrupt it.
           ready=false
           for i in $(seq 1 30); do
@@ -123,7 +123,7 @@ jobs:
           test -n "$csrf"
           headers=(-H "X-BackupHub-CSRF: $csrf" -H "Content-Type: application/json")
           curl -fksS -b "$cookies" "$api/backup/status" |
-            python3 -c 'import json,sys;assert {"smb1","smb","sftp","postgres_1c"} <= set(json.load(sys.stdin)["supported_sources"])'
+            python3 -c 'import json,sys;sources=set(json.load(sys.stdin)["supported_sources"]);assert {"smb","sftp","postgres_1c"} <= sources and "smb1" not in sources'
           # Exercise key import in the packaged systemd service.
           ppk="$(mktemp -d)"
           printf '\n' > "$ppk/empty-passphrase"
@@ -167,6 +167,17 @@ jobs:
             sleep 2
           done
           if [ -z "$snapshot" ]; then sudo journalctl -u backuphub -n 100 --no-pager; exit 1; fi
+          # The journal links the exact verified snapshot, with elapsed time in history.
+          for i in $(seq 1 30); do
+            response="$(curl -fksS -b "$cookies" "$api/backup/runs")"
+            if printf '%s' "$response" | python3 -c 'import json,sys;assert any(r["state"]=="completed" and r.get("snapshot_id")==sys.argv[1] for r in json.load(sys.stdin)["runs"])' "$snapshot"; then break; fi
+            sleep 2
+          done
+          printf '%s' "$response" | python3 -c 'import json,sys;assert any(r["state"]=="completed" and r.get("snapshot_id")==sys.argv[1] for r in json.load(sys.stdin)["runs"])' "$snapshot"
+          curl -fksS -b "$cookies" "$api/backup/snapshots/$snapshot" |
+            python3 -c 'import json,sys;v=json.load(sys.stdin);assert v["id"]==sys.argv[1] and v["duration_ms"]>0' "$snapshot"
+          curl -fksS -b "$cookies" "$api/backup/workload?timezone=UTC" |
+            python3 -c 'import json,sys;v=json.load(sys.stdin);assert len(v["days"])==7 and all(len(d["hours"])==24 for d in v["days"]);assert v["busy_seconds"]>0 and v["observed_seconds"]>=v["busy_seconds"]'
           # A file browser loads one directory page; never a flattened full tree.
           response="$(curl -fksS -b "$cookies" "$api/backup/snapshots/$snapshot/files?dir=.&limit=1")"
           printf '%s' "$response" | python3 -c 'import json,sys;v=json.load(sys.stdin);assert v["directory"]==".";assert len(v["files"])==1;assert v["files"][0]["path"]=="Video";assert v["files"][0]["type"]=="dir"'
@@ -312,15 +323,15 @@ jobs:
       - name: Verify SHA256 of built Debian artifact
         run: |
           cd release
-          sha256sum -c backuphub_0.4.0_amd64.deb.sha256
+          sha256sum -c backuphub_0.5.0_amd64.deb.sha256
       - name: Publish immutable release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.4.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v0.4.0 already published; refusing to overwrite release artifacts"
+          if gh release view v0.5.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.5.0 already published; refusing to overwrite release artifacts"
             exit 0
           fi
-          gh release create v0.4.0 release/backuphub_0.4.0_amd64.deb release/backuphub_0.4.0_amd64.deb.sha256 \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.4.0" \
-            --notes-file docs/releases/v0.4.0.md
+          gh release create v0.5.0 release/backuphub_0.5.0_amd64.deb release/backuphub_0.5.0_amd64.deb.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.5.0" \
+            --notes-file docs/releases/v0.5.0.md

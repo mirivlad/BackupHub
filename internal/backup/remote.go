@@ -98,6 +98,9 @@ func captureSMB(ctx context.Context, c Settings, password, target string) error 
 	dialer := &smb2.Dialer{Credentials: smbauth.NTLMCredential{User: c.Username, Password: password}, RequireMessageSigning: true}
 	session, err := dialer.Dial(ctx, c.Host)
 	if err != nil {
+		if trySMB1(ctx, c.Host, err) {
+			return captureSMB1(ctx, c, password, target)
+		}
 		return fmt.Errorf("SMB connection failed: %w", err)
 	}
 	defer session.Close()

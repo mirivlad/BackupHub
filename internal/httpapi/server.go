@@ -18,7 +18,7 @@ import (
 	"github.com/mirivlad/BackupHub/internal/vault"
 )
 
-const Version = "0.4.0"
+const Version = "0.5.0"
 const sessionCookie = "backuphub_session"
 const csrfCookie = "backuphub_csrf"
 

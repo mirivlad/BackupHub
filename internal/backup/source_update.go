@@ -60,7 +60,9 @@ func (s *Service) UpdateSource(ctx context.Context, id string, in CreateSource) 
 		return empty, errors.New("invalid source name")
 	}
 	switch in.Kind {
-	case "local", "smb", smb1Kind, "sftp", "postgres", postgres1CKind:
+	case smb1Kind:
+		in.Kind = "smb"
+	case "local", "smb", "sftp", "postgres", postgres1CKind:
 	default:
 		return empty, errors.New("unsupported source type")
 	}
@@ -75,7 +77,9 @@ func (s *Service) UpdateSource(ctx context.Context, id string, in CreateSource) 
 	if err != nil {
 		return empty, err
 	}
-	sameCredentials := in.Kind == old.Kind && in.AuthMethod == oldSettings.AuthMethod || in.Kind == "sftp" && in.AuthMethod == "password" && old.Kind == "sftp" && oldSettings.AuthMethod == ""
+	sameAuthMethod := in.Kind != "sftp" || in.AuthMethod == oldSettings.AuthMethod ||
+		(in.AuthMethod == "password" && oldSettings.AuthMethod == "")
+	sameCredentials := in.Kind == old.Kind && sameAuthMethod
 	newCredentials := in.Password != "" || (in.Kind == "sftp" && in.AuthMethod == "key" && in.PrivateKey != "")
 	checked := in
 	if sameCredentials && !newCredentials && oldRef != "" {

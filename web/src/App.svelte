@@ -3,6 +3,7 @@
   import BackupPane from './BackupPane.svelte';
   import NavIcon from './NavIcon.svelte';
   import SettingsPane from './SettingsPane.svelte';
+  import Workload from './Workload.svelte';
 
   type User = { id: string; username: string; role: string };
   type SetupStatus = { setup_required: boolean };
@@ -14,7 +15,7 @@
 
   let view = $state<View>('loading');
   type Section='overview'|'jobs'|'sources'|'storages'|'history'|'runs';
-  type Tab=Section|'audit'|'settings';
+  type Tab=Section|'audit'|'settings'|'workload';
   let activeTab=$state<Tab>('overview');
   const navItems=[
    {id:'overview',label:'Обзор',icon:'overview',group:'main'},
@@ -23,6 +24,7 @@
    {id:'storages',label:'Хранилища',icon:'storages',group:'main'},
    {id:'history',label:'История копий',icon:'history',group:'history'},
    {id:'runs',label:'Журнал выполнения',icon:'runs',group:'history'},
+   {id:'workload',label:'Расписание и загрузка',icon:'schedules',group:'history'},
    {id:'audit',label:'События безопасности',icon:'audit',group:'system'},
    {id:'settings',label:'Настройки',icon:'settings',group:'system'}
   ] as const;
@@ -180,7 +182,7 @@
      {#each ['main','history','system'] as group}
       <p class="side-section">{group==='main'?'УПРАВЛЕНИЕ':group==='history'?'МОНИТОРИНГ':'СИСТЕМА'}</p>
       {#each navItems.filter(item=>item.group===group && (item.id!=='audit'||canAudit) && (item.id!=='settings'||isAdmin)) as item (item.id)}
-       <button class="nav-button" class:active={activeTab===item.id} onclick={()=>activeTab=item.id}><NavIcon name={item.icon} size={18}/><span>{item.label}</span></button>
+       <button class="nav-button" class:active={activeTab===item.id} aria-label={item.label} aria-current={activeTab===item.id?'page':undefined} onclick={()=>activeTab=item.id}><NavIcon name={item.icon} size={18}/><span>{item.label}</span></button>
       {/each}
      {/each}
     </div>
@@ -192,6 +194,8 @@
      {#if errorMessage}<div class="error" role="alert">{errorMessage}</div>{/if}
      {#if activeTab==='settings' && isAdmin}
       <SettingsPane/>
+     {:else if activeTab==='workload'}
+      <Workload/>
      {:else if activeTab==='audit' && canAudit}
       <div class="workspace-header"><div><span class="eyebrow">БЕЗОПАСНОСТЬ</span><h1>События безопасности</h1><p class="secondary">Изменения конфигурации и действия пользователей.</p></div><button class="outline" onclick={()=>void refreshDashboard()}>Обновить</button></div>
       <section class="detail-card">

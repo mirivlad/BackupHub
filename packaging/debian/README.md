@@ -1,6 +1,6 @@
-# BackupHub Debian package (v0.4.0)
+# BackupHub Debian package (v0.5.0)
 
-`sudo apt install ./backuphub_0.4.0_amd64.deb` creates the
+`sudo apt install ./backuphub_0.5.0_amd64.deb` creates the
 dedicated unprivileged system user `backuphub`, initializes state under
 `/var/lib/backuphub`, installs the Go daemon, Svelte UI, an HTTPS service and
 a **separate** root-owned socket-activated `backuphub-storage` helper. Neither
