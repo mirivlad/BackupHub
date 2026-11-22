@@ -236,6 +236,10 @@ func (s *Scheduler) RunDue(ctx context.Context) (bool, error) {
 				code = "source_unavailable"
 			}
 		}
+		if ctx.Err() != nil {
+			finalState = domain.JobInterrupted
+			code = "process_restart"
+		}
 	} else if current != domain.JobVerifying {
 		finalState = domain.JobFailed
 		code = "incomplete_phase_sequence"
@@ -263,6 +267,9 @@ func (s *Scheduler) RunDue(ctx context.Context) (bool, error) {
 		if pending == 0 || nextUnix <= completed.Unix() {
 			nextRun = completed.Add(min(t.Interval, retryDelay))
 		}
+	}
+	if finalState == domain.JobInterrupted {
+		nextRun = completed
 	}
 	finishTx, err := s.db.BeginTx(context.Background(), nil)
 	if err != nil {

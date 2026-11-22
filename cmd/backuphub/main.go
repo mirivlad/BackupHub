@@ -196,16 +196,19 @@ func run(args []string) error {
 				return err
 			}
 		}
+		signals, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
 		server := &http.Server{
 			Addr: *listen, Handler: handler,
 			ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
 			IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384,
+			BaseContext: func(net.Listener) context.Context { return signals },
 		}
-		signals, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
+		httpStopped := make(chan struct{})
 		go func() {
+			defer close(httpStopped)
 			<-signals.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
 			if err := server.Shutdown(ctx); err != nil {
 				slog.Error("shutdown error", "error", err)
@@ -214,6 +217,11 @@ func run(args []string) error {
 		if err := svc.Start(signals); err != nil {
 			return fmt.Errorf("cannot start scheduler: %w", err)
 		}
+		defer func() {
+			stop()
+			svc.WaitStopped()
+			<-httpStopped
+		}()
 		slog.Info("BackupHub started", "listen", *listen, "instance_uuid", c.InstanceID)
 		if *tlsCert != "" {
 			if err := server.ListenAndServeTLS(*tlsCert, *tlsKey); err != nil && err != http.ErrServerClosed {

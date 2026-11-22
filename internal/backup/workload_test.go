@@ -48,6 +48,13 @@ func TestWorkloadUsesScheduleAndMergesActualOverlaps(t *testing.T) {
 	if got.PlannedRuns != 14 || got.OverlapHours != 7 || !slot.Overlap || slot.Planned != 2 {
 		t.Fatalf("expected two overlapping jobs every day: %#v", slot)
 	}
+	items := map[string]string{}
+	for _, item := range slot.Items {
+		items[item.JobID] = item.JobName
+	}
+	if items[long.ID] != long.Name || items[short.ID] != short.Name {
+		t.Fatalf("missing stable edit targets: %#v", slot.Items)
+	}
 	if slot.BusySeconds != 45*60 || got.Days[0].Hours[11].BusySeconds != 10*60 || got.BusySeconds != 85*60 {
 		t.Fatalf("actual occupancy must merge concurrent runs and count time spent on failures, got %d seconds", got.BusySeconds)
 	}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,21 +78,30 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if err = report(domain.JobCommitting); err != nil {
 		return err
 	}
-	native, err := destination.treeBackup(ctx, root, source.ID)
+	var native string
+	err = destination.retryAfterStaleLock(ctx, func() error {
+		var backupErr error
+		native, backupErr = destination.treeBackup(ctx, root, source.ID)
+		return backupErr
+	})
 	if err != nil {
 		code := "restic_backup_failed"
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
 			code = "restic_partial_backup"
 		}
-		return &scheduler.BackupFailure{Code: code, Err: err}
+		return resticStageFailure(code, err)
 	}
-	// Full data verification is a separate, potentially lengthy phase.
+	// Read back the new snapshot before publishing it in the catalog.
 	if err = report(domain.JobVerifying); err != nil {
 		return err
 	}
-	if err = destination.check(ctx, true); err != nil {
-		return &scheduler.BackupFailure{Code: "restic_verification_failed", Err: fmt.Errorf("restic full data verification failed: %w", err)}
+	if err = destination.retryAfterStaleLock(ctx, func() error { return destination.verifySnapshot(ctx, native) }); err != nil {
+		if ctx.Err() == nil {
+			slog.WarnContext(ctx, "restic snapshot verification failed", "run_id", t.RunID,
+				"job_id", t.ID, "repository_id", repoID, "detail", err)
+		}
+		return resticStageFailure("restic_verification_failed", err)
 	}
 	id, err := randomID()
 	if err != nil {
@@ -114,9 +124,14 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 		fidelity = "content_and_timestamps"
 	}
 	marker := portableRecord{ID: id, SourceID: source.ID, SourceName: source.Name, Kind: source.Kind, Root: root, ResticID: native, At: at, DataVerified: true, Consistency: consistency, Fidelity: fidelity, CaptureDurationMS: &duration}
-	markerID, err := destination.commit(ctx, marker)
+	var markerID string
+	err = destination.retryAfterStaleLock(ctx, func() error {
+		var commitErr error
+		markerID, commitErr = destination.commit(ctx, marker)
+		return commitErr
+	})
 	if err != nil {
-		return &scheduler.BackupFailure{Code: "restic_manifest_failed", Err: err}
+		return resticStageFailure("restic_manifest_failed", err)
 	}
 	tx, err := s.catalog.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -130,6 +145,13 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 		return &scheduler.BackupFailure{Code: "snapshot_catalog_failed", Err: err}
 	}
 	return nil
+}
+
+func resticStageFailure(code string, err error) *scheduler.BackupFailure {
+	if errors.Is(err, errResticRepositoryLocked) {
+		code = "restic_repository_locked"
+	}
+	return &scheduler.BackupFailure{Code: code, Err: err}
 }
 
 func insertCommittedTree(ctx context.Context, tx *sql.Tx, repoID, markerID, runID string, rec portableRecord) error {

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"os"
@@ -28,6 +29,8 @@ const (
 	PasswordMode   = "password"
 	NoPasswordMode = "no_password"
 )
+
+var errResticRepositoryLocked = errors.New("restic repository locked")
 
 func validPasswordMode(mode string) bool { return mode == PasswordMode || mode == NoPasswordMode }
 
@@ -154,7 +157,7 @@ func initRepositoryNamedMode(ctx context.Context, stateDir, repoPath, keyPath, m
 		if (mode == PasswordMode && keyErr != nil) || !repoInfo.Mode().IsRegular() {
 			return nil, errors.New("repository/key mismatch: refusing to overwrite existing or lost Restic credentials")
 		}
-		if _, err = r.run(ctx, nil, "snapshots", "--json"); err != nil {
+		if _, err = r.run(ctx, nil, "cat", "config"); err != nil {
 			return nil, fmt.Errorf("cannot open repository: %w", err)
 		}
 		if markerErr == nil {
@@ -310,7 +313,7 @@ func openRepositoryNamedMode(ctx context.Context, stateDir, repoPath, keyPath, m
 	if !config.Mode().IsRegular() {
 		return nil, errors.New("invalid restic repository config")
 	}
-	if _, err = r.run(ctx, nil, "snapshots", "--json"); err != nil {
+	if _, err = r.run(ctx, nil, "cat", "config"); err != nil {
 		return nil, fmt.Errorf("cannot unlock storage: %w", err)
 	}
 	return r, nil
@@ -324,6 +327,9 @@ func (r *repository) command(ctx context.Context, stdin io.Reader, args ...strin
 		base = append(base, "--password-file", r.passwordFile)
 	}
 	cmd := exec.CommandContext(ctx, r.binary, append(base, args...)...)
+	// Let Restic release its repository lock before forcing termination.
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.WaitDelay = 30 * time.Second
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "LANG=C"}
 	cmd.Stdin = stdin
 	return cmd
@@ -339,6 +345,37 @@ func (r *repository) run(ctx context.Context, stdin io.Reader, args ...string) (
 		return nil, fmt.Errorf("restic %s: %w: %s", args[0], err, stderr.String())
 	}
 	return stdout.buf.Bytes(), nil
+}
+
+func isResticLockConflict(err error) bool {
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && (exit.ExitCode() == 11 ||
+		(exit.ExitCode() == 1 && strings.Contains(err.Error(), "repository is already locked")))
+}
+
+func (r *repository) retryAfterStaleLock(ctx context.Context, run func() error) error {
+	err := run()
+	if ctx.Err() != nil || !isResticLockConflict(err) {
+		return err
+	}
+	// Invalid lock data can also cause exit code 11.
+	if !strings.Contains(err.Error(), "repository is already locked") {
+		return errors.Join(errResticRepositoryLocked, err)
+	}
+	unlockCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	output, unlockErr := r.run(unlockCtx, nil, "unlock")
+	if unlockErr != nil {
+		return errors.Join(errResticRepositoryLocked, err, unlockErr)
+	}
+	if detail := strings.TrimSpace(string(output)); detail != "" {
+		slog.InfoContext(ctx, "restic stale locks cleared", "repository", r.path, "detail", detail)
+	}
+	err = run()
+	if isResticLockConflict(err) {
+		return errors.Join(errResticRepositoryLocked, err)
+	}
+	return err
 }
 
 var safeID = func(s string) bool {
@@ -472,8 +509,14 @@ func (r *repository) check(ctx context.Context, allData bool) error {
 	if allData {
 		args = append(args, "--read-data")
 	}
-	_, err := r.run(ctx, nil, args...)
-	return err
+	cmd := r.command(ctx, nil, args...)
+	var stdout, stderr boundedOutput
+	stdout.max, stderr.max = 8192, 8192
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("restic check: %w\n%s", err, strings.TrimSpace(stderr.String()+"\n"+stdout.String()))
+	}
+	return nil
 }
 
 type treeEntry struct {
@@ -486,58 +529,49 @@ type treeEntry struct {
 }
 
 func (r *repository) listTree(ctx context.Context, id string) ([]treeEntry, error) {
-	if !validResticID(id) {
-		return nil, errors.New("invalid snapshot ID")
-	}
-	cmd := r.command(ctx, nil, "ls", "--json", id)
-	pipe, err := cmd.StdoutPipe()
+	entries := make([]treeEntry, 0, 256)
+	err := r.walkTree(ctx, id, func(entry treeEntry) error {
+		if len(entries) >= 1500000 {
+			return errors.New("snapshot file count exceeds safe browse limit")
+		}
+		entries = append(entries, entry)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	var stderr boundedOutput
-	stderr.max = 4096
-	cmd.Stderr = &stderr
-	if err = cmd.Start(); err != nil {
-		return nil, err
-	}
-	decoder := json.NewDecoder(pipe)
-	entries := make([]treeEntry, 0, 256)
-	var parseErr error
-	for {
-		var raw struct {
-			StructType string    `json:"struct_type"`
-			Path       string    `json:"path"`
-			Name       string    `json:"name"`
-			Type       string    `json:"type"`
-			Size       uint64    `json:"size"`
-			Mode       uint32    `json:"mode"`
-			MTime      time.Time `json:"mtime"`
-		}
-		if err = decoder.Decode(&raw); errors.Is(err, io.EOF) {
-			break
-		} else if err != nil {
-			parseErr = err
-			break
-		}
-		if raw.StructType == "node" {
-			entries = append(entries, treeEntry{Path: raw.Path, Name: raw.Name, Type: raw.Type, Size: raw.Size, Mode: raw.Mode, MTime: raw.MTime})
-		}
-		if len(entries) > 1500000 {
-			parseErr = errors.New("snapshot file count exceeds safe browse limit")
-			break
-		}
-	}
-	if parseErr != nil {
-		_ = cmd.Process.Kill()
-	}
-	waitErr := cmd.Wait()
-	if parseErr != nil {
-		return nil, parseErr
-	}
-	if waitErr != nil {
-		return nil, fmt.Errorf("restic ls: %w: %s", waitErr, stderr.String())
-	}
 	return entries, nil
+}
+
+func (r *repository) walkTree(ctx context.Context, id string, visit func(treeEntry) error) error {
+	if !validResticID(id) {
+		return errors.New("invalid snapshot ID")
+	}
+	return r.readStream(ctx, func(reader io.Reader) error {
+		decoder := json.NewDecoder(reader)
+		for {
+			var raw struct {
+				StructType string    `json:"struct_type"`
+				Path       string    `json:"path"`
+				Name       string    `json:"name"`
+				Type       string    `json:"type"`
+				Size       uint64    `json:"size"`
+				Mode       uint32    `json:"mode"`
+				MTime      time.Time `json:"mtime"`
+			}
+			if err := decoder.Decode(&raw); errors.Is(err, io.EOF) {
+				return nil
+			} else if err != nil {
+				return err
+			}
+			if raw.StructType == "node" {
+				entry := treeEntry{Path: raw.Path, Name: raw.Name, Type: raw.Type, Size: raw.Size, Mode: raw.Mode, MTime: raw.MTime}
+				if err := visit(entry); err != nil {
+					return err
+				}
+			}
+		}
+	}, "ls", "--json", id)
 }
 func cleanRel(value string) (string, error) {
 	if value == "" || value == "." {

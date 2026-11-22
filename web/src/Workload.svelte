@@ -2,10 +2,11 @@
  import {onMount,tick} from 'svelte';
  import {formatDuration} from './duration';
 
- type Item={job_name:string;start:string;end?:string};
+ type Item={job_id:string;job_name:string;start:string;end?:string};
  type Slot={planned:number;overlap:boolean;unknown:boolean;past:boolean;observed_seconds:number;busy_seconds:number;items?:Item[]};
  type Day={date:string;weekday:number;hours:Slot[]};
  type Overview={timezone:string;days:Day[];planned_runs:number;overlap_hours:number;unmeasured_jobs:number;active_job:boolean;truncated:boolean;busy_seconds:number;observed_seconds:number;history_days:number;free_window?:{start:string;end:string}};
+ let {onEditJob}:{onEditJob?:(id:string)=>void}=$props();
  const weekdays=['Воскресенье','Понедельник','Вторник','Среда','Четверг','Пятница','Суббота'];
  const compact=['Вс','Пн','Вт','Ср','Чт','Пт','Сб'];
  const hours=Array.from({length:24},(_,i)=>i);
@@ -167,6 +168,7 @@
         <strong>{item.job_name}</strong> · {fmt(item.start)}
         {#if item.end} — {fmt(item.end)} · {formatDuration(Date.parse(item.end)-Date.parse(item.start))}
         {:else} · длительность пока неизвестна{/if}
+        {#if onEditJob}<button class="text-button" aria-label={'Редактировать задание «'+item.job_name+'»'} onclick={()=>onEditJob?.(item.job_id)}>Редактировать</button>{/if}
        </li>
       {/each}</ul>
       {#if slot.planned>slot.items.length}<p class="secondary">Ещё запусков: {slot.planned-slot.items.length}</p>{/if}

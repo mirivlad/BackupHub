@@ -72,6 +72,7 @@ type Service struct {
 	scheduler *scheduler.Scheduler
 	stageDir  string
 	wake      chan struct{}
+	stopped   chan struct{}
 	once      sync.Once
 }
 
@@ -105,7 +106,7 @@ func New(ctx context.Context, c *catalog.Catalog, v *vault.Vault, repoPath, stag
 	if err = ensurePrimaryStorage(ctx, c, repo.path); err != nil {
 		return nil, err
 	}
-	svc := &Service{catalog: c, vault: v, repo: repo, stageDir: stageDir, wake: make(chan struct{}, 1)}
+	svc := &Service{catalog: c, vault: v, repo: repo, stageDir: stageDir, wake: make(chan struct{}, 1), stopped: make(chan struct{})}
 	svc.scheduler = scheduler.New(c, svc)
 	return svc, nil
 }
@@ -117,13 +118,15 @@ func (s *Service) Start(ctx context.Context) error {
 	s.once.Do(func() {
 		_, startErr = s.scheduler.RecoverInterrupted(ctx)
 		if startErr != nil {
+			close(s.stopped)
 			return
 		}
 		go func() {
+			defer close(s.stopped)
 			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()
 			for {
-				for {
+				for ctx.Err() == nil {
 					did, err := s.scheduler.RunDue(ctx)
 					if err != nil && ctx.Err() == nil {
 						slog.Warn("scheduled run failed", "error", safeFailure(err))
@@ -143,6 +146,10 @@ func (s *Service) Start(ctx context.Context) error {
 	})
 	return startErr
 }
+
+// WaitStopped waits for the scheduler to finish canceling its current run.
+func (s *Service) WaitStopped() { <-s.stopped }
+
 func safeFailure(err error) string {
 	if errors.Is(err, scheduler.ErrSSHHostKeyChanged) {
 		return "ssh_host_key_changed"

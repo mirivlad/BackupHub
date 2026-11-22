@@ -16,6 +16,7 @@ const workloadHistoryDays = 28
 const workloadLimit = 50000
 
 type WorkloadItem struct {
+	JobID   string     `json:"job_id"`
 	JobName string     `json:"job_name"`
 	Start   time.Time  `json:"start"`
 	End     *time.Time `json:"end,omitempty"`
@@ -150,11 +151,11 @@ func (s *Service) workloadAt(ctx context.Context, timezone string, now time.Time
 			localStart := start.In(zone)
 			if !measured {
 				slot := &dates[localStart.Format(time.DateOnly)].Hours[localStart.Hour()]
-				addWorkloadItem(slot, WorkloadItem{JobName: job.Name, Start: start}, true)
+				addWorkloadItem(slot, WorkloadItem{JobID: job.ID, JobName: job.Name, Start: start}, true)
 			} else {
 				finish := start.Add(duration)
 				spans = append(spans, timeSpan{localStart, finish.In(zone)})
-				item := WorkloadItem{JobName: job.Name, Start: start, End: &finish}
+				item := WorkloadItem{JobID: job.ID, JobName: job.Name, Start: start, End: &finish}
 				splitHours(localStart, minTime(finish.In(zone), end), func(local, _ time.Time) {
 					slot := &dates[local.Format(time.DateOnly)].Hours[local.Hour()]
 					addWorkloadItem(slot, item, false)

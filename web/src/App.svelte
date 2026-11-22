@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import BackupPane from './BackupPane.svelte';
   import NavIcon from './NavIcon.svelte';
+  import ServiceJournal from './ServiceJournal.svelte';
   import SettingsPane from './SettingsPane.svelte';
   import Workload from './Workload.svelte';
 
@@ -15,8 +16,9 @@
 
   let view = $state<View>('loading');
   type Section='overview'|'jobs'|'sources'|'storages'|'history'|'runs';
-  type Tab=Section|'audit'|'settings'|'workload';
+  type Tab=Section|'audit'|'settings'|'workload'|'service-journal';
   let activeTab=$state<Tab>('overview');
+  let jobToEdit=$state('');
   const navItems=[
    {id:'overview',label:'Обзор',icon:'overview',group:'main'},
    {id:'jobs',label:'Задания',icon:'jobs',group:'main'},
@@ -25,10 +27,12 @@
    {id:'history',label:'История копий',icon:'history',group:'history'},
    {id:'runs',label:'Журнал выполнения',icon:'runs',group:'history'},
    {id:'workload',label:'Расписание и загрузка',icon:'schedules',group:'history'},
+   {id:'service-journal',label:'Журнал службы',icon:'journal',group:'history'},
    {id:'audit',label:'События безопасности',icon:'audit',group:'system'},
    {id:'settings',label:'Настройки',icon:'settings',group:'system'}
   ] as const;
-  function navigate(tab:Section){activeTab=tab;}
+  function navigate(tab:Tab){jobToEdit='';activeTab=tab;}
+  function editScheduledJob(id:string){jobToEdit=id;activeTab='jobs';}
   let busy = $state(false);
   let errorMessage = $state('');
   let notice = $state('');
@@ -128,7 +132,7 @@
       await fetch('/api/v1/auth/logout', {
         method: 'POST', credentials: 'same-origin', headers: { 'X-BackupHub-CSRF': csrfCookie() }
       }).then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); });
-      user = null; identity = null; events = []; view = 'login';
+      user = null; identity = null; events = []; navigate('overview'); view = 'login';
     } catch (err) { errorMessage = describeError(err); }
     finally { busy = false; }
   }
@@ -181,8 +185,8 @@
     <div class="sidebar-navigation">
      {#each ['main','history','system'] as group}
       <p class="side-section">{group==='main'?'УПРАВЛЕНИЕ':group==='history'?'МОНИТОРИНГ':'СИСТЕМА'}</p>
-      {#each navItems.filter(item=>item.group===group && (item.id!=='audit'||canAudit) && (item.id!=='settings'||isAdmin)) as item (item.id)}
-       <button class="nav-button" class:active={activeTab===item.id} aria-label={item.label} aria-current={activeTab===item.id?'page':undefined} onclick={()=>activeTab=item.id}><NavIcon name={item.icon} size={18}/><span>{item.label}</span></button>
+      {#each navItems.filter(item=>item.group===group && (item.id!=='audit'||canAudit) && (!(item.id==='settings'||item.id==='service-journal')||isAdmin)) as item (item.id)}
+       <button class="nav-button" class:active={activeTab===item.id} aria-label={item.label} aria-current={activeTab===item.id?'page':undefined} onclick={()=>navigate(item.id)}><NavIcon name={item.icon} size={18}/><span>{item.label}</span></button>
       {/each}
      {/each}
     </div>
@@ -194,15 +198,17 @@
      {#if errorMessage}<div class="error" role="alert">{errorMessage}</div>{/if}
      {#if activeTab==='settings' && isAdmin}
       <SettingsPane/>
+     {:else if activeTab==='service-journal' && isAdmin}
+      <ServiceJournal/>
      {:else if activeTab==='workload'}
-      <Workload/>
+      <Workload onEditJob={isAdmin?editScheduledJob:undefined}/>
      {:else if activeTab==='audit' && canAudit}
       <div class="workspace-header"><div><span class="eyebrow">БЕЗОПАСНОСТЬ</span><h1>События безопасности</h1><p class="secondary">Изменения конфигурации и действия пользователей.</p></div><button class="outline" onclick={()=>void refreshDashboard()}>Обновить</button></div>
       <section class="detail-card">
        {#if events.length===0}<p class="secondary">Пока нет событий.</p>{:else}<div class="table-scroll"><table><thead><tr><th>Время</th><th>Действие</th><th>Объект</th><th>Пользователь</th></tr></thead><tbody>{#each events as event(event.id)}<tr><td>{localDate(event.at)}</td><td>{event.action}</td><td>{event.resource}</td><td><code>{event.actor.slice(0,12)}</code></td></tr>{/each}</tbody></table></div>{/if}
       </section>
      {:else}
-      <BackupPane section={activeTab as Section} role={user?.role??''} onNavigate={navigate}/>
+      <BackupPane section={activeTab as Section} role={user?.role??''} {jobToEdit} onNavigate={navigate}/>
      {/if}
     </main>
    </div>

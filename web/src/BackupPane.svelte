@@ -1,5 +1,5 @@
 <script lang="ts">
- import {onMount} from 'svelte';
+ import {onMount,tick} from 'svelte';
  import StoragePane from './StoragePane.svelte';
  import CronRuleEditor from './CronRuleEditor.svelte';
  import SnapshotBrowser from './SnapshotBrowser.svelte';
@@ -11,7 +11,7 @@
  type Job={id:string;name:string;source_id:string;source_name:string;repository_id:string;schedule:Profile;enabled:boolean;next_run:string;running:boolean;manual_queued:boolean;current_state?:string};
  type Snapshot={id:string;source_id:string;source_name:string;kind:string;created_at:string;verification:string;fidelity:string;consistency:string;duration_ms?:number};
  type Run={id:string;task_id:string;state:string;started_at:string;finished_at?:string;failure_code?:string;snapshot_id?:string};
- let {section,role,onNavigate}:{section:Section;role:string;onNavigate:(section:Section)=>void}=$props();
+ let {section,role,jobToEdit='',onNavigate}:{section:Section;role:string;jobToEdit?:string;onNavigate:(section:Section)=>void}=$props();
  let sources=$state<Source[]>([]);
  let storages=$state<Storage[]>([]);
  let jobs=$state<Job[]>([]);
@@ -25,6 +25,7 @@
  let editing=$state(false);
  let editingSourceID=$state<string|null>(null);
  let editingJobID=$state<string|null>(null);
+ let jobEditor=$state<HTMLElement>();
  let cronExpr=$state('0 2 * * *');
  let previewTimes=$state<string[]>([]);
  let previewError=$state('');
@@ -84,6 +85,7 @@
    restic_backup_failed:'Restic не смог записать резервную копию в хранилище',
    restic_partial_backup:'Restic прочитал не все данные. Снимок не добавлен в историю',
    restic_verification_failed:'Не удалось проверить целостность данных в хранилище',
+   restic_repository_locked:'Хранилище занято другой операцией Restic или блокировка недоступна для снятия',
    restic_manifest_failed:'Не удалось сохранить или проверить метаданные снимка',
    snapshot_catalog_failed:'Снимок записан, но его не удалось добавить в каталог',
    process_restart:'Копирование прервано перезапуском службы'
@@ -209,7 +211,19 @@
   scheduleForm.timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC';
   const d=new Date();d.setDate(d.getDate()+1);
   scheduleForm.startDate=[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
-  void refresh();
+  const initialJobID=jobToEdit;
+  void refresh().then(async()=>{
+   if(!initialJobID||section!=='jobs'||!canConfigure)return;
+   const job=jobs.find(item=>item.id===initialJobID);
+   if(!job){
+    if(!error)error='Задание больше недоступно';
+    return;
+   }
+   beginEditJob(job);
+   await tick();
+   jobEditor?.scrollIntoView({block:'start'});
+   jobEditor?.querySelector('input')?.focus({preventScroll:true});
+  });
   const poll=setInterval(()=>{if(!busy)void refreshRuntime();},5000);
   return ()=>clearInterval(poll);
  });
@@ -336,7 +350,7 @@
   </section>
  {:else if section==='jobs'}
   {#if editing&&canConfigure}
-   <section class="detail-card editor-card">
+   <section class="detail-card editor-card" bind:this={jobEditor}>
     <div class="section-head"><h2>{editingJobID?'Редактирование задания':'Новое задание'}</h2></div>
     {#if sources.length===0||availableStorages.length===0}
      <div class="empty-state"><strong>Нужны источник и доступное хранилище</strong>
