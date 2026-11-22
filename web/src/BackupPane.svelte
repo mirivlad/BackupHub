@@ -4,7 +4,7 @@
  import CronRuleEditor from './CronRuleEditor.svelte';
  import SnapshotBrowser from './SnapshotBrowser.svelte';
  import {formatDuration} from './duration';
- import {checkDate,checkLabel,checkTone,type CheckStatus} from './verification';
+ import {checkDate,restoreCheckLabel,checkTone,type CheckStatus} from './verification';
  type Section='overview'|'jobs'|'sources'|'storages'|'history'|'runs';
  type Source={id:string;name:string;kind:string;host:string;share:string;path:string;username:string;database:string;access_status?:string;access_hint?:string;auth_method?:string;host_key_fingerprint?:string;};
  type Storage={id:string;name:string;path:string;free_bytes:number;status:string;password_mode:string};
@@ -435,8 +435,8 @@
  {:else if section==='history'}
   <section class="detail-card"><div class="section-head"><h2>Снимки <span class="count">{snapshots.length}</span></h2></div>
    {#if snapshots.length===0}<div class="empty-state"><strong>Нет резервных копий</strong><p>После успешного выполнения задания здесь появится первый снимок.</p></div>
-   {:else}<div class="table-scroll"><table><thead><tr><th>Дата</th><th>Источник</th><th>Длительность</th><th>Проверка при записи</th><th>Пробное восстановление</th><th></th></tr></thead><tbody>{#each snapshots as s(s.id)}<tr><td>{fmt(s.created_at)}</td><td><strong>{s.source_name}</strong></td><td>{formatDuration(s.duration_ms)}</td><td><span class:good-state={s.verification==='data_sha256_verified'} class:warn-state={s.verification!=='data_sha256_verified'} class="status">{s.verification==='data_sha256_verified'?'Проверено':'Требует проверки'}</span></td><td>{#if s.can_test_restore}
-      <span class={'check-badge '+checkTone(s.restore_check.state)} title={s.restore_check.finished_at ? checkDate(s.restore_check.finished_at) : ''}>{checkLabel(s.restore_check.state)}</span>
+   {:else}<div class="table-scroll"><table><thead><tr><th>Дата</th><th>Источник</th><th>Длительность</th><th>Целостность при записи</th><th>Пробное восстановление</th><th></th></tr></thead><tbody>{#each snapshots as s(s.id)}<tr><td>{fmt(s.created_at)}</td><td><strong>{s.source_name}</strong></td><td>{formatDuration(s.duration_ms)}</td><td><span class:good-state={s.verification==='data_sha256_verified'} class:warn-state={s.verification!=='data_sha256_verified'} class="status">{s.verification==='data_sha256_verified'?'Проверено':'Требует проверки'}</span></td><td>{#if s.can_test_restore}
+      <span class={'check-badge '+checkTone(s.restore_check.state)} title={s.restore_check.finished_at ? checkDate(s.restore_check.finished_at) : ''}>{restoreCheckLabel(s.restore_check.state)}</span>
      {:else}<span class="secondary">Для файловых источников</span>{/if}</td><td><button class="outline" disabled={busy} onclick={()=>void showSnapshot(s)}>Открыть снимок</button></td></tr>{/each}</tbody></table></div>{/if}
   </section>
   {#if activeSnapshot}

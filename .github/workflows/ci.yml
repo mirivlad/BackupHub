@@ -83,12 +83,12 @@ jobs:
           if file dist/backuphub | grep -q 'dynamically linked'; then echo 'DEB binary must not depend on the CI runner glibc'; exit 1; fi
       - name: Create and inspect .deb
         run: |
-          sh packaging/debian/build.sh 0.6.0
-          dpkg-deb -c dist/backuphub_0.6.0_amd64.deb | grep '/usr/share/backuphub/web/index.html'
-          dpkg-deb -c dist/backuphub_0.6.0_amd64.deb | grep '/lib/systemd/system/backuphub.service'
+          sh packaging/debian/build.sh 0.6.1
+          dpkg-deb -c dist/backuphub_0.6.1_amd64.deb | grep '/usr/share/backuphub/web/index.html'
+          dpkg-deb -c dist/backuphub_0.6.1_amd64.deb | grep '/lib/systemd/system/backuphub.service'
       - name: Install Debian package and test HTTPS service
         run: |
-          sudo apt-get install -y ./dist/backuphub_0.6.0_amd64.deb
+          sudo apt-get install -y ./dist/backuphub_0.6.1_amd64.deb
           # postinst starts the daemon and initializes Restic; do not interrupt it.
           ready=false
           for i in $(seq 1 30); do
@@ -239,6 +239,10 @@ jobs:
           curl -fksS -b "$cookies" "$api/backup/storages" |
             python3 -c 'import json,sys;s=next(s for s in json.load(sys.stdin)["storages"] if s["id"]=="primary");assert s["metadata_check"]["state"]==s["data_check"]["state"]=="passed"'
           sudo test -z "$(sudo ls -A /var/lib/backuphub/restore-checks)"
+          response="$(curl -fksS -b "$cookies" "${headers[@]}" -d '{"path":"Video"}' "$api/backup/snapshots/$snapshot/restore-checks")"
+          operation="$(printf '%s' "$response" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')"
+          wait_check "$api/backup/snapshots/$snapshot/restore-checks" "$operation"
+          printf '%s' "$response" | python3 -c 'import json,sys;r=next(r for r in json.load(sys.stdin)["runs"] if r["id"]==sys.argv[1]); assert r["selection"]=="Video" and r["files"]==1 and r["bytes"]==20' "$operation"
           # Test the shipped CLI against a second state directory.
           recovery_dir="$(mktemp -d)"
           sudo chown backuphub:backuphub "$recovery_dir"
@@ -357,15 +361,15 @@ jobs:
       - name: Verify SHA256 of built Debian artifact
         run: |
           cd release
-          sha256sum -c backuphub_0.6.0_amd64.deb.sha256
+          sha256sum -c backuphub_0.6.1_amd64.deb.sha256
       - name: Publish immutable release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.6.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v0.6.0 already published; refusing to overwrite release artifacts"
+          if gh release view v0.6.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.6.1 already published; refusing to overwrite release artifacts"
             exit 0
           fi
-          gh release create v0.6.0 release/backuphub_0.6.0_amd64.deb release/backuphub_0.6.0_amd64.deb.sha256 \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.6.0" \
-            --notes-file docs/releases/v0.6.0.md
+          gh release create v0.6.1 release/backuphub_0.6.1_amd64.deb release/backuphub_0.6.1_amd64.deb.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.6.1" \
+            --notes-file docs/releases/v0.6.1.md

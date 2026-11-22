@@ -429,10 +429,33 @@ func (r *repository) treeBackup(ctx context.Context, root, sourceID string) (str
 	if waitErr != nil {
 		return "", fmt.Errorf("restic backup incomplete: %w: %s", waitErr, stderr.String())
 	}
-	if !validResticID(snapshot) {
-		return "", errors.New("restic did not return a full snapshot ID")
+	return r.fullSnapshotID(ctx, snapshot)
+}
+
+// Older Restic versions report an eight-character ID in the backup summary.
+// Resolve only that exact prefix, with ambiguity treated as a failed commit.
+func (r *repository) fullSnapshotID(ctx context.Context, id string) (string, error) {
+	if validResticID(id) {
+		return id, nil
 	}
-	return snapshot, nil
+	if len(id) != 8 {
+		return "", errors.New("restic did not return a snapshot ID")
+	}
+	if _, err := hex.DecodeString(id); err != nil || strings.ToLower(id) != id {
+		return "", errors.New("restic returned an invalid snapshot ID")
+	}
+	raw, err := r.run(ctx, nil, "snapshots", "--json", id)
+	if err != nil {
+		return "", err
+	}
+	var found []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &found); err != nil || len(found) != 1 ||
+		!validResticID(found[0].ID) || !strings.HasPrefix(found[0].ID, id) {
+		return "", errors.New("restic snapshot prefix did not resolve to one full ID")
+	}
+	return found[0].ID, nil
 }
 func validResticID(s string) bool {
 	if len(s) != 64 {
@@ -491,10 +514,7 @@ func (r *repository) commit(ctx context.Context, rec portableRecord) (string, er
 			id = event.SnapshotID
 		}
 	}
-	if !validResticID(id) {
-		return "", errors.New("restic commit marker missing")
-	}
-	return id, nil
+	return r.fullSnapshotID(ctx, id)
 }
 
 type treeEntry struct {

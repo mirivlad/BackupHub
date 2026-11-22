@@ -74,7 +74,9 @@ func scanSnapshot(row interface{ Scan(...any) error }) (Snapshot, error) {
 		s.DurationMS = &duration.Int64
 	}
 	s.RestoreCheck = checkStatus(checkState, checkFinished, defaultCheckFreshness, time.Now())
-	s.CanTestRestore = supportsRestoreCheck(s.Kind)
+	s.CanTestRestore = supportsRestoreCheck(s.Kind) ||
+		(s.Kind == recoveredSourceKind && s.Consistency == "best_effort" &&
+			(s.Fidelity == "basic_metadata" || s.Fidelity == "content_and_timestamps"))
 	return s, nil
 }
 func (s *Service) Files(ctx context.Context, id string) ([]File, error) {

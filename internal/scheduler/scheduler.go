@@ -35,14 +35,15 @@ const MaxInterval = 365 * 24 * time.Hour
 const retryDelay = 5 * time.Minute
 
 type Task struct {
-	ID        string        `json:"id"`
-	DatasetID string        `json:"dataset_id"`
-	Kind      string        `json:"kind"`
-	Interval  time.Duration `json:"-"`
-	NextRun   time.Time     `json:"next_run"`
-	Enabled   bool          `json:"enabled"`
-	RunID     string        `json:"-"`
-	StartedAt time.Time     `json:"-"`
+	ID           string        `json:"id"`
+	DatasetID    string        `json:"dataset_id"`
+	Kind         string        `json:"kind"`
+	Interval     time.Duration `json:"-"`
+	NextRun      time.Time     `json:"next_run"`
+	Enabled      bool          `json:"enabled"`
+	RepositoryID string        `json:"-"`
+	RunID        string        `json:"-"`
+	StartedAt    time.Time     `json:"-"`
 }
 type Run struct {
 	ID          string          `json:"id"`
@@ -60,6 +61,13 @@ type Run struct {
 type Executor interface {
 	Execute(ctx context.Context, task Task, report func(domain.JobState) error) error
 }
+
+// Admission reserves a task's resource without waiting or querying SQLite.
+// A declined task keeps its pending flag and due time and gets no run record.
+type Admission interface {
+	TryReserve(Task) (release func(), admitted bool)
+}
+
 type Scheduler struct {
 	db      *sql.DB
 	execute Executor
@@ -146,18 +154,39 @@ func (s *Scheduler) RunDue(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	var release func()
+	defer func() {
+		_ = tx.Rollback()
+		if release != nil {
+			release()
+		}
+	}()
 	var t Task
 	var seconds, nextUnix int64
-	var enabled int
-	var pending int
-	err = tx.QueryRowContext(ctx, `SELECT id,dataset_id,kind,interval_seconds,next_run_unix,enabled,manual_pending
- FROM schedule_entries WHERE enabled=1 AND active_run_id IS NULL AND (manual_pending=1 OR next_run_unix<=?)
- ORDER BY manual_pending DESC,next_run_unix,id LIMIT 1`, s.now().Unix()).Scan(&t.ID, &t.DatasetID, &t.Kind, &seconds, &nextUnix, &enabled, &pending)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
+	var enabled, pending int
+	rows, err := tx.QueryContext(ctx, `SELECT e.id,e.dataset_id,e.kind,e.interval_seconds,e.next_run_unix,e.enabled,e.manual_pending,
+	 COALESCE(r.repository_id,'')
+	 FROM schedule_entries e LEFT JOIN schedule_repositories r ON r.schedule_id=e.id
+	 WHERE e.enabled=1 AND e.active_run_id IS NULL AND (e.manual_pending=1 OR e.next_run_unix<=?)
+	 ORDER BY e.manual_pending DESC,e.next_run_unix,e.id`, s.now().Unix())
 	if err != nil {
+		return false, err
+	}
+	admitted := false
+	for rows.Next() {
+		if err = rows.Scan(&t.ID, &t.DatasetID, &t.Kind, &seconds, &nextUnix, &enabled, &pending, &t.RepositoryID); err != nil {
+			break
+		}
+		if gate, ok := s.execute.(Admission); ok {
+			release, admitted = gate.TryReserve(t)
+		} else {
+			admitted = true
+		}
+		if admitted {
+			break
+		}
+	}
+	if err = errors.Join(err, rows.Err(), rows.Close()); err != nil || !admitted {
 		return false, err
 	}
 	t.Interval = time.Duration(seconds) * time.Second

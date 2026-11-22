@@ -1,9 +1,9 @@
 <script lang="ts">
  import {onMount} from 'svelte';
  import VerificationHistory from './VerificationHistory.svelte';
- import {checkActive, checkDate, checkLabel, checkTone, type CheckStatus, type VerificationRun} from './verification';
+ import {checkActive, checkDate, checkTone, restoreCheckLabel, type CheckStatus, type VerificationRun} from './verification';
 
- let {id, status, canRun}:{id: string; status: CheckStatus; canRun: boolean} = $props();
+ let {id, status, canRun, candidate}:{id: string; status: CheckStatus; canRun: boolean; candidate?: string} = $props();
  let runs = $state<VerificationRun[]>([]);
  let busy = $state(false);
  let loading = $state(false);
@@ -35,13 +35,14 @@
   }
  }
 
- async function start(){
+ async function start(selection: string){
   busy = true;
   error = '';
   try {
    const response = await fetch(path,{
     method:'POST',credentials:'same-origin',signal:controller.signal,
-    headers:{'X-BackupHub-CSRF':csrf()}
+    headers:{'X-BackupHub-CSRF':csrf(),'Content-Type':'application/json'},
+    body:JSON.stringify({path:selection})
    });
    const body = await response.json();
    if (!response.ok) throw new Error(body.error ?? 'Не удалось начать проверку');
@@ -64,14 +65,19 @@
 <div class="snapshot-check">
  <div class="check-heading">
   <strong>Пробное восстановление</strong>
-  <span class={'check-badge '+checkTone(restoreState)}>{checkLabel(restoreState)}</span>
+  <span class={'check-badge '+checkTone(restoreState)}>{restoreCheckLabel(restoreState)}</span>
   {#if checkedAt}<small>{checkDate(checkedAt)}</small>{/if}
-  {#if canRun}<button type="button" class="outline" disabled={busy || active} onclick={()=>void start()}>Проверить восстановление</button>{/if}
+  {#if canRun}
+   <button type="button" class="outline" disabled={busy || active} onclick={()=>void start('')}>Проверить выборку</button>
+   <button type="button" class="outline" disabled={busy || active || !candidate}
+    onclick={()=>{if(candidate)void start(candidate);}}>Проверить {candidate === '.' ? 'корень снимка' : 'выбранный путь'}</button>
+  {/if}
   <button type="button" class="outline" aria-expanded={showHistory} onclick={()=>{showHistory=!showHistory;if(showHistory)void refresh();}}>История проверок</button>
  </div>
+ {#if canRun && candidate && candidate !== '.'}<p class="secondary check-path">Путь для пробы <code>{candidate}</code></p>{/if}
  {#if error}<p class="error" role="alert">{error}</p>{/if}
  {#if showHistory}
-  <p class="secondary">Проверяется выборка до 8 файлов и 256 МиБ.</p>
+  <p class="secondary">Автовыборка до 8 файлов и 256 МиБ. Выбранный путь до 256 обычных файлов и 2 ГиБ.</p>
   {#if loaded || runs.length}<VerificationHistory {runs}/>{:else if loading}<p class="secondary">Загрузка проверок…</p>{/if}
  {/if}
 </div>
@@ -79,5 +85,6 @@
 <style>
  .snapshot-check{border:1px solid var(--line);border-radius:9px;padding:12px}
  .check-heading{display:flex;gap:9px 14px;align-items:center;flex-wrap:wrap}
+ .check-path{overflow-wrap:anywhere}
  .check-heading small{color:var(--muted)}
 </style>

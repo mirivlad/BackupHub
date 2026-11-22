@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 13
+const SchemaVersion = 14
 
 // Catalog stores operational state; the portable repository manifest must
 // remain sufficient for rebuilding the snapshot index after database loss.
@@ -382,6 +382,20 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	}
 	if version < 13 {
 		if err = migrateVerificationV13(ctx, tx); err != nil {
+			return err
+		}
+	}
+	if version < 14 {
+		var exists bool
+		if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pragma_table_info('verification_runs') WHERE name='selection')").Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			if _, err = tx.ExecContext(ctx, "ALTER TABLE verification_runs ADD COLUMN selection TEXT NOT NULL DEFAULT ''"); err != nil {
+				return fmt.Errorf("v14 restore check migration: %w", err)
+			}
+		}
+		if _, err = tx.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS schedule_repositories_by_storage ON schedule_repositories(repository_id)"); err != nil {
 			return err
 		}
 	}

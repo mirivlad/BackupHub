@@ -147,12 +147,6 @@ func (s *Service) repositoryFor(ctx context.Context, id string) (*repository, er
 	return existingRepository(path, key, mode)
 }
 
-func (s *Service) taskRepository(ctx context.Context, scheduleID string) (string, error) {
-	var repoID string
-	err := s.catalog.DB.QueryRowContext(ctx, "SELECT repository_id FROM schedule_repositories WHERE schedule_id=?", scheduleID).Scan(&repoID)
-	return repoID, err
-}
-
 // RegisterStorage is used after privileged directory provisioning, but is
 // also testable with a directory owned by the backuphub service user.
 func (s *Service) RegisterStorage(ctx context.Context, name, repoPath string) (Storage, error) {

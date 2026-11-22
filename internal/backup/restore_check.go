@@ -20,7 +20,7 @@ const restoreCheckSpaceReserve = 32 << 20
 
 func supportsRestoreCheck(kind string) bool {
 	switch kind {
-	case "local", "smb", smb1Kind, "sftp", recoveredSourceKind:
+	case "local", "smb", smb1Kind, "sftp":
 		return true
 	default:
 		return false
@@ -92,40 +92,15 @@ func (s *Service) runRestoreCheck(ctx context.Context, repo *repository, run Ver
 		}
 		snap.Kind = rec.Kind
 	}
-	if !supportsRestoreCheck(snap.Kind) || snap.Kind == recoveredSourceKind {
+	if !supportsRestoreCheck(snap.Kind) {
 		return 0, 0, ErrRestoreCheckUnsupported
 	}
 
-	var entries []treeEntry
-	var empty *treeEntry
-	if err = repo.walkTree(ctx, snap.ResticID, func(entry treeEntry) error {
-		if entry.Type != "file" || len(entries) == restoreCheckMaxFiles || entry.Size > uint64(restoreCheckMaxBytes-size) {
-			return nil
-		}
-		rel, err := relativeTo(snap.Root, entry.Path)
-		if err != nil || rel == "." {
-			return nil
-		}
-		if _, err := cleanRel(rel); err != nil {
-			return nil
-		}
-		if entry.Size == 0 {
-			if empty == nil {
-				empty = &entry
-			}
-			return nil
-		}
-		size += int64(entry.Size)
-		entries = append(entries, entry)
-		return nil
-	}); err != nil {
+	entries, size, err := planRestoreCheck(func(visit func(treeEntry) error) error {
+		return repo.walkTree(ctx, snap.ResticID, visit)
+	}, snap.Root, run.Selection)
+	if err != nil {
 		return 0, 0, err
-	}
-	if len(entries) == 0 {
-		if empty == nil {
-			return 0, 0, errors.New("нет обычных файлов в пределах лимита пробного восстановления")
-		}
-		entries = append(entries, *empty)
 	}
 	root := s.restoreCheckRoot()
 	if err = privateRestoreRoot(root); err != nil {

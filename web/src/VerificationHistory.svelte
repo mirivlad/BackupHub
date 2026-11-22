@@ -1,6 +1,6 @@
 <script lang="ts">
  import {formatDuration} from './duration';
- import {checkDate, checkLabel, checkTone, type VerificationRun} from './verification';
+ import {checkDate, checkLabel, checkTone, restoreCheckLabel, type VerificationRun} from './verification';
  let {runs}:{runs: VerificationRun[]} = $props();
  const kinds = {metadata: 'Метаданные', data: 'Все данные', restore: 'Пробное восстановление'};
  const number = new Intl.NumberFormat('ru-RU');
@@ -13,18 +13,19 @@
   {#each runs as run (run.id)}
    <li>
     <div class="check-run">
-     <strong>{kinds[run.kind]}</strong>
-     <span class={'check-badge '+checkTone(run.state)}>{checkLabel(run.state)}</span>
+     <strong>{run.kind==='restore' ? (run.selection ? 'Проба выбранного пути' : 'Автовыборка') : kinds[run.kind]}</strong>
+     <span class={'check-badge '+checkTone(run.state)}>{run.kind==='restore'?restoreCheckLabel(run.state):checkLabel(run.state)}</span>
      <time datetime={run.started_at ?? run.queued_at}>{checkDate(run.started_at ?? run.queued_at)}</time>
      {#if run.duration_ms !== undefined}<small>{formatDuration(run.duration_ms)}</small>{/if}
      {#if run.files !== undefined}<small>Файлов {number.format(run.files)} · {number.format(run.bytes ?? 0)} Б</small>{/if}
     </div>
+    {#if run.selection}<small><code>{run.selection==='.'?'Корень снимка':run.selection}</code></small>{/if}
     {#if run.state === 'running' && run.progress !== undefined}
      <progress aria-label="Ход проверки" max="1" value={run.progress}></progress>
      <small>{Math.round(run.progress * 100)} %</small>
     {/if}
     {#if run.detail}
-     <details><summary>Подробности</summary><pre>{run.detail}</pre></details>
+     <details open={run.kind==='restore'&&run.state==='failed'}><summary>Подробности</summary><pre>{run.detail}</pre></details>
     {/if}
    </li>
   {/each}

@@ -149,7 +149,8 @@
   </div>
   <button class="close-browser" type="button" onclick={onClose} title="Закрыть просмотр">Закрыть <span aria-hidden="true">×</span></button>
  </div>
- {#if snapshot.can_test_restore}<SnapshotVerification id={snapshot.id} status={snapshot.restore_check} canRun={canExport}/>{/if}
+ {#if snapshot.can_test_restore}<SnapshotVerification id={snapshot.id} status={snapshot.restore_check} canRun={canExport}
+  candidate={selected.length===1?selected[0]:selected.length===0?directory:undefined}/>{/if}
  <div class="browser-toolbar">
   <nav class="breadcrumbs" aria-label="Путь к папке">
    {#each breadcrumbs as crumb,i(crumb.path)}

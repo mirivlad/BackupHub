@@ -102,6 +102,13 @@ case "$6" in
     printf '{"struct_type":"snapshot","id":"%s"}\n' "$8"
     cat "$0.tree"
     ;;
+  cat)
+    case "$7:$8" in
+      snapshot:*) printf '%s\n' '{"tree":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' ;;
+      blob:aaaaaaaa*) printf '%s\n' '{"nodes":[{"name":"d","type":"dir","subtree":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}' ;;
+      blob:bbbbbbbb*) printf '%s\n' '{"nodes":[{"name":"f","type":"file","size":3,"inode":42,"device_id":1},{"name":"h","type":"file","size":3,"inode":42,"device_id":1},{"name":"s","type":"symlink","linktarget":"../elsewhere"}]}' ;;
+      *) exit 4 ;;
+    esac ;;
   dump) exec cat "$0.tar" ;;
   *) exit 4 ;;
 esac
@@ -109,6 +116,7 @@ esac
 	for _, tc := range []struct {
 		name, file, symlink, hardlink string
 		size, trim                    int
+		changedTarget                 bool
 		extra                         bool
 		pass                          bool
 	}{
@@ -118,6 +126,7 @@ esac
 		{name: "wrong-type", file: "d/s", size: 3, symlink: "d/f", hardlink: "d/f"},
 		{name: "duplicate", file: "d/f", size: 3, symlink: "d/f", hardlink: "d/f"},
 		{name: "wrong-hardlink-target", file: "d/f", size: 3, symlink: "d/s", hardlink: "d"},
+		{name: "changed-symlink-target", file: "d/f", size: 3, symlink: "d/s", hardlink: "d/f", changedTarget: true},
 		{name: "no-trailer", file: "d/f", size: 3, symlink: "d/s", hardlink: "d/f", trim: 1024},
 		{name: "short-trailer", file: "d/f", size: 3, symlink: "d/s", hardlink: "d/f", trim: 512},
 		{name: "unexpected-trailing-content", file: "d/f", size: 3, symlink: "d/s", hardlink: "d/f", extra: true},
@@ -137,12 +146,16 @@ esac
 			}
 			var raw bytes.Buffer
 			archive := tar.NewWriter(&raw)
+			linkTarget := "../elsewhere"
+			if tc.changedTarget {
+				linkTarget = "../other"
+			}
 			for _, h := range []tar.Header{
 				{Name: "d/", Typeflag: tar.TypeDir},
 				{Name: "d/empty/", Typeflag: tar.TypeDir},
 				{Name: tc.file, Typeflag: tar.TypeReg, Size: int64(tc.size)},
 				{Name: "d/h", Typeflag: tar.TypeLink, Linkname: tc.hardlink},
-				{Name: tc.symlink, Typeflag: tar.TypeSymlink, Linkname: "../elsewhere"},
+				{Name: tc.symlink, Typeflag: tar.TypeSymlink, Linkname: linkTarget},
 			} {
 				if err := archive.WriteHeader(&h); err != nil {
 					t.Fatal(err)
@@ -208,5 +221,32 @@ exec RESTIC_BINARY "$@"
 	native, err := s.repo.run(ctx, nil, "snapshots", "--json")
 	if err != nil || !bytes.Contains(native, []byte("bh-pending")) || bytes.Contains(native, []byte("bh-commit-")) {
 		t.Fatalf("expected only an unpublished Restic tree: %s %v", native, err)
+	}
+}
+
+func TestSnapshotVerificationPreservesRawNamesAndTargets(t *testing.T) {
+	requireIntegrationRestic(t)
+	repo := serviceFixture(t).repo
+	root := privateDir(t)
+	for _, name := range []string{"raw\xff", "raw\ufffd", "quote'\"\\\n.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("fixture"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(root, "empty"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("raw\xff", filepath.Join(root, "link\xff")); err != nil {
+		t.Fatal(err)
+	}
+	id, err := repo.treeBackup(context.Background(), root, "raw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.verifySnapshot(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(snapshotIndexRoot(filepath.Dir(repo.passwordFile))); err != nil || len(entries) != 0 {
+		t.Fatalf("index was not removed: %v %v", entries, err)
 	}
 }

@@ -47,7 +47,7 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
-		if errors.Is(err, backup.ErrRestoreCheckUnsupported) {
+		if errors.Is(err, backup.ErrRestoreCheckUnsupported) || errors.Is(err, backup.ErrRestoreCheckPath) {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
@@ -411,7 +411,14 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 					jsonResponse(w, http.StatusForbidden, map[string]string{"error": "restore permission required"})
 					return
 				}
-				run, err := s.backup.QueueRestoreCheck(r.Context(), id)
+				var input struct {
+					Path string `json:"path"`
+				}
+				// v0.6.0 clients send an empty body for automatic sampling.
+				if r.ContentLength != 0 && !decode(w, r, &input) {
+					return
+				}
+				run, err := s.backup.QueueRestoreCheck(r.Context(), id, input.Path)
 				if err != nil {
 					fail(err)
 					return

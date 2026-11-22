@@ -27,15 +27,10 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if t.Kind != "backup" {
 		return errors.New("unsupported executor kind")
 	}
-	repoID, err := s.taskRepository(ctx, t.ID)
-	if err != nil {
-		return fmt.Errorf("missing destination storage: %w", err)
+	repoID := t.RepositoryID
+	if repoID == "" {
+		return errors.New("missing destination storage")
 	}
-	release, ok := s.tryRepositoryWork(repoID)
-	if !ok {
-		return &scheduler.BackupFailure{Code: "repository_busy", Err: scheduler.ErrSourceUnavailable}
-	}
-	defer release()
 	destination, err := s.repositoryFor(ctx, repoID)
 	if err != nil {
 		return &scheduler.BackupFailure{Code: "storage_unavailable", Err: errors.Join(scheduler.ErrSourceUnavailable, err)}

@@ -10,6 +10,7 @@ export type VerificationRun = {
  finished_at?: string;
  duration_ms?: number;
  detail?: string;
+ selection?: string;
  progress?: number;
  files?: number;
  bytes?: number;
@@ -39,4 +40,10 @@ export function checkDate(value: string) {
 }
 export function checkActive(state?: CheckState) {
  return state === 'queued' || state === 'running';
+}
+
+export function restoreCheckLabel(state: CheckState) {
+ if (state === 'passed') return 'Проба пройдена';
+ if (state === 'failed') return 'Проба не пройдена';
+ return checkLabel(state);
 }

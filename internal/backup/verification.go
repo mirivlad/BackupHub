@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/mirivlad/BackupHub/internal/scheduler"
 )
 
 const verificationHistoryLimit = 50
@@ -31,6 +33,7 @@ type VerificationRun struct {
 	StartedAt    *time.Time `json:"started_at,omitempty"`
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
 	DurationMS   *int64     `json:"duration_ms,omitempty"`
+	Selection    string     `json:"selection,omitempty"`
 	Detail       string     `json:"detail,omitempty"`
 	Progress     *float64   `json:"progress,omitempty"`
 	Files        *int64     `json:"files,omitempty"`
@@ -53,14 +56,14 @@ type StorageChecks struct {
 	Runs     []VerificationRun `json:"runs"`
 }
 
-const verificationColumns = `id,repository_id,COALESCE(snapshot_id,''),kind,state,queued_at,started_at,finished_at,detail,progress,files,bytes`
+const verificationColumns = `id,repository_id,COALESCE(snapshot_id,''),kind,state,queued_at,started_at,finished_at,detail,progress,files,bytes,selection`
 
 func scanVerification(row interface{ Scan(...any) error }) (VerificationRun, error) {
 	var run VerificationRun
 	var queued int64
 	var started, finished sql.NullInt64
 	if err := row.Scan(&run.ID, &run.RepositoryID, &run.SnapshotID, &run.Kind, &run.State, &queued,
-		&started, &finished, &run.Detail, &run.Progress, &run.Files, &run.Bytes); err != nil {
+		&started, &finished, &run.Detail, &run.Progress, &run.Files, &run.Bytes, &run.Selection); err != nil {
 		return run, err
 	}
 	run.QueuedAt = time.UnixMilli(queued).UTC()
@@ -167,29 +170,32 @@ func (s *Service) QueueRepositoryCheck(ctx context.Context, repoID, mode string)
 	if !repositoryCheckMode(mode) {
 		return VerificationRun{}, errors.New("неизвестный режим проверки хранилища")
 	}
-	return s.queueVerification(ctx, repoID, "", mode)
+	return s.queueVerification(ctx, repoID, "", mode, "")
 }
 
-func (s *Service) QueueRestoreCheck(ctx context.Context, id string) (VerificationRun, error) {
+func (s *Service) QueueRestoreCheck(ctx context.Context, id, selection string) (VerificationRun, error) {
 	snap, err := s.Snapshot(ctx, id)
 	if err != nil {
 		return VerificationRun{}, err
 	}
-	if !supportsRestoreCheck(snap.Kind) {
+	if !snap.CanTestRestore {
 		return VerificationRun{}, ErrRestoreCheckUnsupported
 	}
-	return s.queueVerification(ctx, snap.RepositoryID, id, "restore")
+	if selection != "" && (!validRestoreCheckPath(selection) || len(selection) > 4096) {
+		return VerificationRun{}, ErrRestoreCheckPath
+	}
+	return s.queueVerification(ctx, snap.RepositoryID, id, "restore", selection)
 }
 
-func (s *Service) queueVerification(ctx context.Context, repoID, snapshotID, kind string) (VerificationRun, error) {
+func (s *Service) queueVerification(ctx context.Context, repoID, snapshotID, kind, selection string) (VerificationRun, error) {
 	id, err := randomID()
 	if err != nil {
 		return VerificationRun{}, err
 	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	row, err := s.catalog.DB.ExecContext(ctx, `INSERT INTO verification_runs(id,repository_id,snapshot_id,kind,state,queued_at)
-	 SELECT ?,id,NULLIF(?,''),?,'queued',? FROM storage_repositories WHERE id=?
-	 ON CONFLICT(repository_id) WHERE state IN ('queued','running') DO NOTHING`, id, snapshotID, kind, now.UnixMilli(), repoID)
+	row, err := s.catalog.DB.ExecContext(ctx, `INSERT INTO verification_runs(id,repository_id,snapshot_id,kind,state,queued_at,selection)
+	 SELECT ?,id,NULLIF(?,''),?,'queued',?,? FROM storage_repositories WHERE id=?
+	 ON CONFLICT(repository_id) WHERE state IN ('queued','running') DO NOTHING`, id, snapshotID, kind, now.UnixMilli(), selection, repoID)
 	if err != nil {
 		return VerificationRun{}, err
 	}
@@ -208,7 +214,7 @@ func (s *Service) queueVerification(ctx context.Context, repoID, snapshotID, kin
 		return VerificationRun{}, ErrVerificationBusy
 	}
 	s.notifyVerification()
-	return VerificationRun{ID: id, RepositoryID: repoID, SnapshotID: snapshotID, Kind: kind, QueuedAt: now, State: "queued"}, nil
+	return VerificationRun{ID: id, RepositoryID: repoID, SnapshotID: snapshotID, Kind: kind, Selection: selection, QueuedAt: now, State: "queued"}, nil
 }
 
 func (s *Service) notifyVerification() {
@@ -218,12 +224,17 @@ func (s *Service) notifyVerification() {
 	}
 }
 
+func (s *Service) TryReserve(task scheduler.Task) (func(), bool) {
+	return s.tryRepositoryWork(task.RepositoryID)
+}
+
 func (s *Service) tryRepositoryWork(id string) (func(), bool) {
 	if _, held := s.repositoryWork.LoadOrStore(id, struct{}{}); held {
 		return nil, false
 	}
 	return func() {
 		s.repositoryWork.Delete(id)
+		s.notify()
 		s.notifyVerification()
 	}, true
 }
@@ -299,7 +310,11 @@ func (s *Service) enqueueDueChecks(ctx context.Context) error {
 
 func (s *Service) queuedChecks(ctx context.Context) ([]VerificationRun, error) {
 	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT `+verificationColumns+` FROM verification_runs
-	 WHERE state='queued' ORDER BY queued_at,id`)
+	 WHERE state='queued' AND NOT EXISTS (
+	  SELECT 1 FROM schedule_repositories dest JOIN schedule_entries task ON task.id=dest.schedule_id
+	  WHERE dest.repository_id=verification_runs.repository_id AND task.enabled=1 AND task.active_run_id IS NULL
+	  AND (task.manual_pending=1 OR task.next_run_unix<=?)
+	 ) ORDER BY queued_at,id`, time.Now().Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -401,7 +416,10 @@ func (s *Service) executeVerification(parent context.Context, run VerificationRu
 		files, bytes, err = s.runRestoreCheck(ctx, repo, run, progress)
 		if err == nil {
 			restoredFiles, restoredBytes = &files, &bytes
-			detail = "Размеры и SHA-256 восстановленных файлов совпали."
+			detail = "Размеры и SHA-256 файлов автоматической выборки совпали."
+			if run.Selection != "" {
+				detail = "Размеры и SHA-256 обычных файлов по выбранному пути совпали."
+			}
 		}
 	} else if err == nil {
 		err = repo.checkWithProgress(ctx, run.Kind == "data", progress)

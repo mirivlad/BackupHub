@@ -81,7 +81,7 @@ func TestVerificationChecksAndRestoreWithRealRestic(t *testing.T) {
 	if err := os.WriteFile(file, []byte("new live contents"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	run, err := s.QueueRestoreCheck(ctx, snap.ID)
+	run, err := s.QueueRestoreCheck(ctx, snap.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +117,18 @@ func TestVerificationChecksAndRestoreWithRealRestic(t *testing.T) {
 		t.Fatalf("wrong storage integrity states: %+v %v", storages, err)
 	}
 
+	chosen, err := s.QueueRestoreCheck(ctx, snap.ID, "report.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitVerification(t, s, chosen.ID, terminalVerification); done.State != "passed" ||
+		done.Selection != "report.bin" || done.Bytes == nil || *done.Bytes != int64(len(payload)) {
+		t.Fatalf("selected file check failed: %+v", done)
+	}
+	if _, err := s.QueueRestoreCheck(ctx, snap.ID, "../outside"); !errors.Is(err, ErrRestoreCheckPath) {
+		t.Fatalf("unsafe selection accepted: %v", err)
+	}
+
 	// Corrupt only a disposable repository's data pack. Its inventory
 	// remains available, but neither restore verification nor data check can pass.
 	var pack string
@@ -134,7 +146,7 @@ func TestVerificationChecksAndRestoreWithRealRestic(t *testing.T) {
 	if err := os.Truncate(pack, 9); err != nil {
 		t.Fatal(err)
 	}
-	failed, err := s.QueueRestoreCheck(ctx, snap.ID)
+	failed, err := s.QueueRestoreCheck(ctx, snap.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +161,7 @@ func TestVerificationChecksAndRestoreWithRealRestic(t *testing.T) {
 		t.Fatalf("corrupt pack accepted by repository check: %+v", done)
 	}
 	history, err := s.RestoreChecks(ctx, snap.ID)
-	if err != nil || len(history) != 2 || history[0].State != "failed" || history[1].State != "passed" {
+	if err != nil || len(history) != 3 || history[0].State != "failed" || history[1].State != "passed" || history[2].State != "passed" {
 		t.Fatalf("restore history lost evidence: %+v %v", history, err)
 	}
 	snapAfter, err := s.Snapshot(ctx, snap.ID)
@@ -244,7 +256,7 @@ func TestVerificationRestartAndV12Migration(t *testing.T) {
 		after.ResticID != snap.ResticID || after.Verification != snap.Verification || after.RestoreCheck.State != "unknown" {
 		t.Fatalf("legacy snapshot or key changed during migration: %+v %v %v", after, err, keyErr)
 	}
-	run, err := s.QueueRestoreCheck(ctx, after.ID)
+	run, err := s.QueueRestoreCheck(ctx, after.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +280,7 @@ func TestVerificationRestartAndV12Migration(t *testing.T) {
 	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
 		t.Fatalf("temporary files left after restart: %v", err)
 	}
-	fresh, err := s.QueueRestoreCheck(ctx, after.ID)
+	fresh, err := s.QueueRestoreCheck(ctx, after.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,5 +368,47 @@ exec "$BACKUPHUB_FIXTURE_RESTIC" "$@"
 	s.WaitStopped()
 	if done := waitVerification(t, s, run.ID, terminalVerification); done.State != "interrupted" || done.DurationMS == nil {
 		t.Fatalf("canceled operation did not become interrupted: %+v", done)
+	}
+}
+
+func TestRepositoryProgressWithRealRestic(t *testing.T) {
+	requireIntegrationRestic(t)
+	s := serviceFixture(t)
+	snap, _, _ := backupVerificationFixture(t, s)
+	var reports int
+	var last float64
+	if err := s.repo.checkWithProgress(context.Background(), true, func(fraction float64) {
+		reports++
+		last = fraction
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if reports == 0 || last != 1 {
+		t.Fatalf("no final report from real Restic pack verification: reports=%d last=%f", reports, last)
+	}
+	t.Logf("Restic reported %d progress lines for the repository containing snapshot %s, final %.0f%%", reports, snap.ID, 100*last)
+}
+
+func TestRecoveredApplicationSnapshotCannotOfferFileCheck(t *testing.T) {
+	requireIntegrationRestic(t)
+	s := serviceFixture(t)
+	snap, _, _ := backupVerificationFixture(t, s)
+	ctx := context.Background()
+	if _, err := s.catalog.DB.Exec("UPDATE sources SET kind=? WHERE id=?", recoveredSourceKind, snap.SourceID); err != nil {
+		t.Fatal(err)
+	}
+	file, err := s.Snapshot(ctx, snap.ID)
+	if err != nil || !file.CanTestRestore {
+		t.Fatalf("a recovered file snapshot should be eligible: %+v %v", file, err)
+	}
+	if _, err := s.catalog.DB.Exec("UPDATE file_snapshots SET consistency='application_consistent',fidelity='logical_dump' WHERE snapshot_id=?", snap.ID); err != nil {
+		t.Fatal(err)
+	}
+	app, err := s.Snapshot(ctx, snap.ID)
+	if err != nil || app.CanTestRestore {
+		t.Fatalf("recovered application snapshot incorrectly eligible: %+v %v", app, err)
+	}
+	if _, err = s.QueueRestoreCheck(ctx, snap.ID, "report.bin"); !errors.Is(err, ErrRestoreCheckUnsupported) {
+		t.Fatalf("application snapshot accepted a file-check request: %v", err)
 	}
 }

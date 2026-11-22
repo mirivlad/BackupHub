@@ -1,6 +1,6 @@
-# BackupHub Debian package (v0.6.0)
+# BackupHub Debian package (v0.6.1)
 
-`sudo apt install ./backuphub_0.6.0_amd64.deb` creates the
+`sudo apt install ./backuphub_0.6.1_amd64.deb` creates the
 dedicated unprivileged system user `backuphub`, initializes state under
 `/var/lib/backuphub`, installs the Go daemon, Svelte UI, an HTTPS service and
 a **separate** root-owned socket-activated `backuphub-storage` helper. Neither
@@ -20,12 +20,12 @@ in the browser. Then browse `https://backup-host:8443/`. The initial
 certificate is self-signed; replace it with trusted TLS or a well-configured
 Nginx reverse proxy.
 
-## Upgrade from v0.5.1
+## Upgrade from v0.5.x–v0.6.0
 
 Export an [offline recovery kit](../../docs/recovery.md) and copy the kit to a
 separate system. Verify the new package checksum and install it with
-`sudo apt install ./backuphub_0.6.0_amd64.deb`. BackupHub migrates the existing
-catalog to schema v13 and uses the configured storage paths and keys. Existing
+`sudo apt install ./backuphub_0.6.1_amd64.deb`. BackupHub migrates the existing
+catalog to schema v14 and uses the configured storage paths and keys. Existing
 file-tree snapshots are eligible for restore checks.
 
 After the service restarts, sign in, confirm that the expected volumes are

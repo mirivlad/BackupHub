@@ -153,6 +153,9 @@ func (s *Service) Start(ctx context.Context) error {
 			close(s.stopped)
 			return
 		}
+		if err := s.cleanSnapshotIndexes(); err != nil {
+			slog.Warn("cannot remove old snapshot indexes", "error", err)
+		}
 		go func() {
 			defer close(s.stopped)
 			defer lease.Close()
@@ -170,7 +173,7 @@ func (s *Service) Start(ctx context.Context) error {
 					if err != nil && ctx.Err() == nil {
 						slog.Warn("scheduled run failed", "error", safeFailure(err))
 					}
-					if err != nil || !did {
+					if !did {
 						break
 					}
 				}

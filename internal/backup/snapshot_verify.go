@@ -3,6 +3,7 @@ package backup
 import (
 	"archive/tar"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -13,72 +14,70 @@ import (
 // Restic authenticates data blobs as it reads them. Its TAR can omit a
 // subtree after a read error, so verify the stream against the snapshot tree.
 func (r *repository) verifySnapshot(ctx context.Context, id string) error {
-	entries := make(map[string]snapshotArchiveEntry)
-	if err := r.walkTree(ctx, id, func(entry treeEntry) error {
-		switch entry.Type {
-		case "file", "dir", "symlink":
-			if entry.Path == "/" || !strings.HasPrefix(entry.Path, "/") || path.Clean(entry.Path) != entry.Path {
-				return fmt.Errorf("invalid snapshot tree path %q", entry.Path)
-			}
-			if _, exists := entries[entry.Path]; exists {
-				return fmt.Errorf("duplicate snapshot tree path %q", entry.Path)
-			}
-			entries[entry.Path] = snapshotArchiveEntry{treeEntry: entry}
+	return r.withSnapshotIndex(ctx, func(index *snapshotIndex) error {
+		if err := index.load(ctx, r, id); err != nil {
+			return err
 		}
-		// The Restic dumper omits sockets, devices and FIFOs.
-		return nil
-	}); err != nil {
-		return err
-	}
+		return r.readStream(ctx, func(reader io.Reader) error {
+			return index.verifyArchive(ctx, r, id, reader)
+		}, "dump", "--archive", "tar", id, "/")
+	})
+}
 
-	return r.readStream(ctx, func(reader io.Reader) error {
-		input := &tarInput{Reader: reader, tracking: true}
-		archive := tar.NewReader(input)
-		remaining := len(entries)
-		var padding int64
-		for {
-			input.bytes, input.lastNonzero, input.tracking = 0, 0, true
-			header, err := archive.Next()
-			if errors.Is(err, io.EOF) {
-				if remaining != 0 {
-					return fmt.Errorf("restic snapshot archive incomplete: %d entries missing", remaining)
-				}
-				// archive/tar also accepts EOF on a block boundary without
-				// the required two zero records. Restic writes both records.
-				if input.bytes != padding+1024 || input.lastNonzero > padding {
-					return errors.New("restic snapshot archive has a missing or invalid end marker")
-				}
-				input.bytes, input.lastNonzero = 0, 0
-				_, err = io.Copy(io.Discard, input)
-				if err == nil && input.lastNonzero != 0 {
-					return errors.New("unexpected data after restic snapshot archive")
-				}
-				return err
+func (index *snapshotIndex) verifyArchive(ctx context.Context, repo *repository, id string, reader io.Reader) error {
+	input := &tarInput{Reader: reader, tracking: true}
+	archive := tar.NewReader(input)
+	var padding int64
+	for {
+		input.bytes, input.lastNonzero, input.tracking = 0, 0, true
+		header, err := archive.Next()
+		if errors.Is(err, io.EOF) {
+			if index.remaining != 0 {
+				return fmt.Errorf("restic snapshot archive incomplete: %d entries missing", index.remaining)
 			}
-			if err != nil {
-				return err
+			// archive/tar also accepts EOF on a block boundary without
+			// the required two zero records. Restic writes both records.
+			if input.bytes != padding+1024 || input.lastNonzero > padding {
+				return errors.New("restic snapshot archive has a missing or invalid end marker")
 			}
-			name, err := tarSnapshotPath(strings.TrimSuffix(header.Name, "/"))
-			if err != nil {
-				return err
+			input.bytes, input.lastNonzero = 0, 0
+			_, err = io.Copy(io.Discard, input)
+			if err == nil && input.lastNonzero != 0 {
+				return errors.New("unexpected data after restic snapshot archive")
 			}
-			entry, exists := entries[name]
-			if !exists || entry.seen {
-				return fmt.Errorf("unexpected or duplicate restic archive entry %q", name)
-			}
-			if err := verifyTarEntry(header, entry.treeEntry, entries); err != nil {
-				return err
-			}
-			entry.seen = true
-			entries[name] = entry
-			remaining--
-			input.tracking = false
-			if _, err := io.Copy(io.Discard, archive); err != nil {
-				return fmt.Errorf("read restic archive entry %q: %w", name, err)
-			}
-			padding = (512 - header.Size%512) % 512
+			return err
 		}
-	}, "dump", "--archive", "tar", id, "/")
+		if err != nil {
+			return err
+		}
+		archiveName := header.Name
+		if header.Typeflag == tar.TypeDir {
+			archiveName = strings.TrimSuffix(archiveName, "/")
+		}
+		name, err := tarSnapshotPath(archiveName)
+		if err != nil {
+			return err
+		}
+		entry, err := index.lookup(ctx, name)
+		if errors.Is(err, sql.ErrNoRows) || entry.seen {
+			return fmt.Errorf("unexpected or duplicate restic archive entry %q", name)
+		}
+		if err != nil {
+			return err
+		}
+		if err := index.verifyEntry(ctx, repo, id, name, header, entry); err != nil {
+			return err
+		}
+		if _, err := index.seen.ExecContext(ctx, []byte(name)); err != nil {
+			return err
+		}
+		index.remaining--
+		input.tracking = false
+		if _, err := io.Copy(io.Discard, archive); err != nil {
+			return fmt.Errorf("read restic archive entry %q: %w", name, err)
+		}
+		padding = (512 - header.Size%512) % 512
+	}
 }
 
 func tarSnapshotPath(name string) (string, error) {
@@ -89,29 +88,44 @@ func tarSnapshotPath(name string) (string, error) {
 	return "/" + name, nil
 }
 
-type snapshotArchiveEntry struct {
-	treeEntry
-	seen bool
-}
-
-func verifyTarEntry(header *tar.Header, entry treeEntry, entries map[string]snapshotArchiveEntry) error {
+func (i *snapshotIndex) verifyEntry(ctx context.Context, repo *repository, id, name string, header *tar.Header, entry snapshotArchiveEntry) error {
 	valid := false
 	switch header.Typeflag {
 	case tar.TypeReg, tar.TypeRegA:
-		valid = entry.Type == "file" && uint64(header.Size) == entry.Size
+		valid = entry.kind == "file" && header.Size == entry.size
 	case tar.TypeDir:
-		valid = entry.Type == "dir" && header.Size == 0
+		valid = entry.kind == "dir" && header.Size == 0
 	case tar.TypeSymlink:
-		valid = entry.Type == "symlink" && header.Size == 0 && header.Linkname != ""
+		if entry.kind == "symlink" && header.Size == 0 {
+			exact, err := i.exactEntry(ctx, repo, id, name, entry)
+			if err != nil {
+				return err
+			}
+			valid = exact.target != "" && header.Linkname == exact.target
+		}
 	case tar.TypeLink:
 		target, err := tarSnapshotPath(header.Linkname)
-		to, exists := entries[target]
-		valid = err == nil && exists && to.seen && to.Type == "file" &&
-			entry.Type == "file" && entry.Inode != 0 && to.Inode == entry.Inode &&
-			to.Size == entry.Size && header.Size == 0
+		if err != nil {
+			return err
+		}
+		to, err := i.lookup(ctx, target)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if entry.kind == "file" && header.Size == 0 && to.seen && to.kind == "file" {
+			entry, err = i.exactEntry(ctx, repo, id, name, entry)
+			if err != nil {
+				return err
+			}
+			to, err = i.exactEntry(ctx, repo, id, target, to)
+			if err != nil {
+				return err
+			}
+			valid = entry.inode != 0 && entry.inode == to.inode && entry.device == to.device && entry.size == to.size
+		}
 	}
 	if !valid {
-		return fmt.Errorf("restic archive entry %q does not match snapshot type, size or link", entry.Path)
+		return fmt.Errorf("restic archive entry %q does not match snapshot type, size or link", name)
 	}
 	return nil
 }
@@ -157,11 +171,8 @@ func (r *repository) readStream(ctx context.Context, consume func(io.Reader) err
 		cancel()
 	}
 	waitErr := cmd.Wait()
-	if readErr != nil {
-		return readErr
+	if waitErr != nil && (readErr == nil || stderr.String() != "") {
+		return errors.Join(readErr, fmt.Errorf("restic %s: %w: %s", args[0], waitErr, stderr.String()))
 	}
-	if waitErr != nil {
-		return fmt.Errorf("restic %s: %w: %s", args[0], waitErr, stderr.String())
-	}
-	return nil
+	return readErr
 }
