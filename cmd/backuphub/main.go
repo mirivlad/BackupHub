@@ -34,6 +34,11 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "recovery" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return runRecovery(ctx, args[1:])
+	}
 	if len(args) > 0 && args[0] == "storage-helper" {
 		if len(args) != 1 {
 			return fmt.Errorf("storage-helper takes no arguments")
