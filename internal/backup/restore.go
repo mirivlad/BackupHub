@@ -113,8 +113,16 @@ func (s *Service) RestoreToNewDirectory(ctx context.Context, id string, selectio
 		return "", errors.New("no regular files matched restore selection")
 	}
 	note := fmt.Sprintf("BackupHub restore copy created %s UTC from snapshot %s.\nThis is not an in-place restore. Verify data before transferring it to the original source.\n", time.Now().UTC().Format(time.RFC3339), snap.ID)
-	if err = os.WriteFile(filepath.Join(destination, "BACKUPHUB-RESTORE-README.txt"), []byte(note), 0600); err != nil {
+	readme, err := os.OpenFile(filepath.Join(destination, "BACKUPHUB-RESTORE-README.txt"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil && !errors.Is(err, os.ErrExist) {
 		return "", err
+	}
+	if err == nil {
+		_, writeErr := readme.WriteString(note)
+		closeErr := readme.Close()
+		if err = errors.Join(writeErr, closeErr); err != nil {
+			return "", err
+		}
 	}
 	success = true
 	return destination, nil

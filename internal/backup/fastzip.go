@@ -213,7 +213,23 @@ func finishZIP(zw *zip.Writer, snapshotID string, requested map[string]bool, has
 	if err != nil {
 		return err
 	}
-	writer, err := zw.Create("backuphub-export-manifest.json")
+	// A data file or its implied directory can occupy the usual manifest name.
+	const stem = "backuphub-export-manifest"
+	roots := map[string]bool{}
+	for name := range hashes {
+		root, _, _ := strings.Cut(name, "/")
+		if strings.HasPrefix(root, stem) {
+			roots[root] = true
+		}
+	}
+	name := stem + ".json"
+	for suffix := 1; roots[name]; suffix++ {
+		name = fmt.Sprintf("%s-%d.json", stem, suffix)
+	}
+	if err := zw.SetComment(name); err != nil {
+		return err
+	}
+	writer, err := zw.Create(name)
 	if err != nil {
 		return err
 	}

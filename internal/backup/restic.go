@@ -659,22 +659,7 @@ func (r *repository) zipSelection(ctx context.Context, snapshotID, root string, 
 		}
 		hashes[f.relative] = hex.EncodeToString(digest.Sum(nil))
 	}
-	content, err := json.MarshalIndent(struct {
-		Snapshot string            `json:"snapshot"`
-		Included []string          `json:"included"`
-		SHA256   map[string]string `json:"sha256"`
-	}{snapshotID, selections, hashes}, "", "  ")
-	if err != nil {
-		return err
-	}
-	mf, err := zw.Create("backuphub-export-manifest.json")
-	if err != nil {
-		return err
-	}
-	if _, err = mf.Write(content); err != nil {
-		return err
-	}
-	return zw.Close()
+	return finishZIP(zw, snapshotID, requested, hashes)
 }
 func (r *repository) downloadSingle(ctx context.Context, id, root, requested string, w http.ResponseWriter) error {
 	rel, err := cleanRel(requested)
