@@ -1,6 +1,6 @@
-# BackupHub Debian package (v0.2.5)
+# BackupHub Debian package (v0.3.0)
 
-`sudo apt install ./backuphub_0.2.5_amd64.deb` creates the
+`sudo apt install ./backuphub_0.3.0_amd64.deb` creates the
 dedicated unprivileged system user `backuphub`, initializes state under
 `/var/lib/backuphub`, installs the Go daemon, Svelte UI, an HTTPS service and
 a **separate** root-owned socket-activated `backuphub-storage` helper. Neither
@@ -57,11 +57,10 @@ its own block format and technically encrypts with the empty password;
 this is NOT a normal directory tree. Existing repositories retain their
 original protected mode without alteration.
 
-**Back up ALL required keys**: `/var/lib/backuphub/master.key`,
-`/var/lib/backuphub/restic.key`, each `restic-<id>.key` **for password-protected storages** plus the SQLite
-catalog and off-host repository data. Passwordless storage has no
-`restic-<id>.key`. Keep offline copies of needed keys. Losing one of
-them renders the corresponding protected backup inaccessible.
+Create an [offline recovery kit](../../docs/recovery.md) to preserve the
+SQLite catalog and all required keys. Store it separately from the
+Restic repositories. The recovery runbook covers restoring fresh service
+state and importing snapshots written after the catalog checkpoint.
 
 ## Source limitations
 

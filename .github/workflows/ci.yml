@@ -83,12 +83,12 @@ jobs:
           if file dist/backuphub | grep -q 'dynamically linked'; then echo 'DEB binary must not depend on the CI runner glibc'; exit 1; fi
       - name: Create and inspect .deb
         run: |
-          sh packaging/debian/build.sh 0.2.5
-          dpkg-deb -c dist/backuphub_0.2.5_amd64.deb | grep '/usr/share/backuphub/web/index.html'
-          dpkg-deb -c dist/backuphub_0.2.5_amd64.deb | grep '/lib/systemd/system/backuphub.service'
+          sh packaging/debian/build.sh 0.3.0
+          dpkg-deb -c dist/backuphub_0.3.0_amd64.deb | grep '/usr/share/backuphub/web/index.html'
+          dpkg-deb -c dist/backuphub_0.3.0_amd64.deb | grep '/lib/systemd/system/backuphub.service'
       - name: Install Debian package and test HTTPS service
         run: |
-          sudo apt-get install -y ./dist/backuphub_0.2.5_amd64.deb
+          sudo apt-get install -y ./dist/backuphub_0.3.0_amd64.deb
           # postinst starts the daemon and initializes Restic; do not interrupt it.
           ready=false
           for i in $(seq 1 30); do
@@ -185,6 +185,15 @@ jobs:
           test -n "$restored"
           sudo grep -x 'backuphub-roundtrip' "$restored/Video/clip.txt"
           test ! -f /opt/backuphub-smoke/Video/clip.txt
+          # Test the shipped CLI against a second state directory.
+          recovery_dir="$(mktemp -d)"
+          sudo chown backuphub:backuphub "$recovery_dir"
+          sudo runuser -u backuphub -- backuphub recovery export -kit "$recovery_dir/kit"
+          sudo runuser -u backuphub -- backuphub recovery restore -kit "$recovery_dir/kit" -data-dir "$recovery_dir/restored"
+          sudo runuser -u backuphub -- backuphub recovery reconcile -data-dir "$recovery_dir/restored" -repository-id primary |
+            grep -F 'Repository primary: imported 0 snapshot(s)'
+          sudo runuser -u backuphub -- backuphub admin-status -data-dir "$recovery_dir/restored" |
+            grep -F 'Administrator configured'
           # A root-owned 0700 directory under /home must be readable by the
           # backup process without changing ownership/ACL or running it as root.
           sudo install -d -o root -g root -m 0700 /home/backuphub-ci-private
@@ -294,15 +303,15 @@ jobs:
       - name: Verify SHA256 of built Debian artifact
         run: |
           cd release
-          sha256sum -c backuphub_0.2.5_amd64.deb.sha256
+          sha256sum -c backuphub_0.3.0_amd64.deb.sha256
       - name: Publish immutable release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.2.5 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v0.2.5 already published; refusing to overwrite release artifacts"
+          if gh release view v0.3.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.3.0 already published; refusing to overwrite release artifacts"
             exit 0
           fi
-          gh release create v0.2.5 release/backuphub_0.2.5_amd64.deb release/backuphub_0.2.5_amd64.deb.sha256 \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.2.5" \
-            --notes-file docs/releases/v0.2.5.md
+          gh release create v0.3.0 release/backuphub_0.3.0_amd64.deb release/backuphub_0.3.0_amd64.deb.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.3.0" \
+            --notes-file docs/releases/v0.3.0.md

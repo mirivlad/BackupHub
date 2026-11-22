@@ -1,6 +1,6 @@
-# Scheduler: durable execution ledger (Phase A)
+# Scheduler: durable execution ledger
 
-**Status: tested orchestration library, not yet a running backup scheduler.** This Go module will be started from the BackupHub service when native connectors, permissions, repository registration and preflight are wired. No real backup job is silently created or run by the API now.
+BackupHub starts the scheduler with the service. Each backup job owns its interval or cron configuration, first occurrence and time zone. Manual requests queue a run and preserve an upcoming planned occurrence.
 
 ## Model
 
@@ -12,13 +12,13 @@
 - `RecoverInterrupted(ctx)` — marks unfinalized work `interrupted`, unlocks schedules and allows one catch-up execution. It does not replay every missed interval at boot.
 - `RecentRuns` — paged read-only history, no plaintext passwords or raw application output.
 
-Backoff: when preflight returns `ErrSourceUnavailable`, a task records `waiting_for_source` and retries after the smaller of its normal interval and five minutes. Other failures remain failed with a later scheduled opportunity. A completed task advances to a future due date, with no automatic deletions of data.
+When preflight returns `ErrSourceUnavailable` during a planned run, a task records `waiting_for_source` and retries after the smaller of its normal interval and five minutes. A manual request preserves a planned occurrence that is still in the future. Other failures remain failed with a later scheduled opportunity.
 
 ## Crash and concurrency guarantees
 
 The due-task claim and new-run creation are one SQLite transaction; the active run ID prevents overlap even when polls race. Phase changes are persisted before continuing. The final state and next run are committed together. On restart, an explicit `RecoverInterrupted` reconciles abandoned active runs and avoids false successes.
 
-**Limitations:** this release slice supports interval schedules only, and only one running instance against each catalog is supported until a lease/fencing protocol is implemented. The engine is not automatically started in `backuphub serve`; all production connectors and external storage targets are still awaiting integration. Time zones, weekly/calendar scheduling, retry limits, bounded worker pools, multi-instance leases, and pause/resume controls remain outstanding.
+The service processes one backup at a time. Each backup currently checks all data in its destination repository, which can delay queued jobs. Each catalog supports one running instance. Recovered state pauses restored schedules until the operator enables them.
 
 ## Tests
 

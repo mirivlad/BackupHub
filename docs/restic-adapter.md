@@ -1,6 +1,8 @@
-# Restic adapter: portable snapshots (Phase A)
+# Restic adapters and portable snapshots
 
-**Development component; not yet a production backup engine.** This is a native Go adapter to Restic, **not** a wrapper for arbitrary shell backup scripts. No server API exposes repository creation or modification yet.
+The running service uses native Restic file-tree snapshots. Each verified tree has a separate `bh-commit-<id>` marker containing `backuphub-tree-manifest.json` in the `backuphub.restic.tree.v1` format. The catalog links that marker, the native tree ID and the registered repository. The [recovery runbook](recovery.md) describes how to import tree manifests into recovered state.
+
+The remaining sections describe the separate component adapter in `internal/storage/restic` for composed application snapshots. It is exercised in integration tests.
 
 ## Format v1
 
@@ -27,10 +29,10 @@ The adapter uses fixed `exec.CommandContext` arguments and **no shell**, bounded
 
 Restic returns exit **3** when a backup is partial (some files unreadable). BackupHub treats any nonzero status as failure, never publication. Restic `check` alone does not prove application restoration; the separate `Verify` method currently checks only component bytes, not a test application's startup.
 
-Per-component `--stdin` snapshots do not preserve full file trees, filesystem ACLs or meaningful directory metadata. They are designed for capturing **logical application objects** through the connector/restore strategy abstraction. A future native file-tree adapter must use Restic's file-tree backup capabilities (or an equivalent storage mechanism), without repacking entire shares into single large archives. The current adapter must not be used to promise faithful SMB/SSH file restores.
+Per-component `--stdin` snapshots capture logical application objects. The service's file-tree path uses separate native Restic backups for local, SMB and SFTP file content. Support for metadata varies by source.
 
 ## Integration tests
 
 GitHub CI installs the Restic executable and runs an actual isolated local repository test: init → store components → refuse incomplete commit → commit manifest → `restic check --read-data` → discover without SQLite → verify SHA-256 → restore exact bytes. A separate aborted transaction test proves it cannot appear as a committed BackupHub snapshot.
 
-No repository lifecycle API or retention executor is exposed while object reference tracking and privilege separation remain incomplete.
+Protected retention, reference-aware pruning and independent replication are pending.
