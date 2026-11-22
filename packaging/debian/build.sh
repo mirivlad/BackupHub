@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build an installable Debian/Ubuntu amd64 package from already-tested binaries.
 set -eu
-VERSION="${1:-0.3.0}"
+VERSION="${1:-0.4.0}"
 ROOT="${2:-dist}"
 ARCH="${3:-amd64}"
 BASE="$ROOT/backuphub_${VERSION}_${ARCH}"
@@ -20,9 +20,10 @@ Priority: optional
 Architecture: $ARCH
 Maintainer: BackupHub contributors <noreply@github.com>
 Depends: adduser, ca-certificates, openssl, restic, postgresql-client, systemd
+Recommends: putty-tools, smbclient
 Description: Self-hosted backup, version history and restoration system
- BackupHub provides a Go daemon, Svelte web interface, native SMB2/3,
- SFTP and PostgreSQL dump sources, scheduled Restic snapshots (password-protected or passwordless),
+ BackupHub provides a Go daemon, Svelte web interface, SMB1/2/3, SFTP, PostgreSQL
+ and Postgres Pro for 1C sources, scheduled Restic snapshots (password-protected or passwordless),
  browser downloads and safe alternate-directory restoration.
  See project documentation for supported sources and safety limitations.
 CONTROL

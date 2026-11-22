@@ -1,6 +1,6 @@
-# BackupHub Debian package (v0.3.0)
+# BackupHub Debian package (v0.4.0)
 
-`sudo apt install ./backuphub_0.3.0_amd64.deb` creates the
+`sudo apt install ./backuphub_0.4.0_amd64.deb` creates the
 dedicated unprivileged system user `backuphub`, initializes state under
 `/var/lib/backuphub`, installs the Go daemon, Svelte UI, an HTTPS service and
 a **separate** root-owned socket-activated `backuphub-storage` helper. Neither
@@ -64,10 +64,10 @@ state and importing snapshots written after the catalog checkpoint.
 
 ## Source limitations
 
-SMB2/3 and SFTP captures stage the **entire remote dataset** on the **selected backup volume** (under its private `staging/` folder) before Restic can deduplicate and encrypt it. The legacy `primary` storage stages under `/var/lib/backuphub/staging`.
+SMB and SFTP captures stage the **entire remote dataset** on the **selected backup volume** (under its private `staging/` folder) before Restic can deduplicate and encrypt it. The legacy `primary` storage stages under `/var/lib/backuphub/staging`.
 Ensure enough temporary space. Do not select BackupHub's own state/repository
-as a source. SSH/SFTP accepts password or OpenSSH private key authentication
-(with an optional key passphrase), managed entirely from the web interface.
+as a source. SSH/SFTP accepts password authentication and private keys in
+OpenSSH or PuTTY PPK v2/v3 format. A passphrase can be supplied in the web interface.
 The first SSH server public key is pinned automatically (TOFU) in SQLite and
 displayed as an SHA-256 fingerprint. A changed server key blocks subsequent
 connections. The first handshake is vulnerable to active MITM; administrators
@@ -80,13 +80,18 @@ user folders. `ProtectHome=read-only` and `ProtectSystem=strict` prevent writes.
 This capability can read sensitive local files: keep the admin account secure,
 restrict access to HTTPS, and audit backup destinations.
 
-SMB1 is unsupported. PostgreSQL uses custom
-`pg_dump` with TOC validation only; native split-config for PostgreSQL Pro 1C
-is **not** included.
+SMB1 is a separate source type. Its Samba client runs without the daemon's
+ambient capabilities and requires signing and NTLMv2. The Debian package
+recommends `smbclient` for SMB1 and `putty-tools` for PPK import. Install
+those packages explicitly if you install BackupHub without recommendations.
 
-Restoration is limited to a **new** server-side directory or ZIP download,
-not overwriting live data. There is no automatic protected retention, external
-immutable replication, 1C restore, Windows VSS/AD or mailbox connector yet.
+Ordinary PostgreSQL uses custom `pg_dump` with TOC validation. For Postgres Pro
+for 1C, the [runbook](../../docs/postgres-1c.md) covers split-config capture and
+restoration into a separate compatible database.
+
+BackupHub restores snapshot files to a **new** server-side directory and
+offers ZIP download. Protected retention, external immutable replication,
+Windows VSS/AD and mailbox connectors are on the roadmap.
 
 See [detailed storage guide](../../docs/multi-storage.md).
 

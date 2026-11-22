@@ -14,7 +14,7 @@ BackupHub: REST API / RBAC / audit / export / restore
            ├── Vault AES-256-GCM + внешний master key (реализован)
            ├── Планировщик (cron, интервалы, ручные запуски)
            │       └── Журнал запусков в SQLite
-           ├── Источники (локальный каталог, SMB2/3, SFTP, PostgreSQL)
+           ├── Источники (локальный каталог, SMB1/2/3, SFTP, PostgreSQL и Postgres Pro для 1С)
            ├── Каталог снимков (SQLite/WAL)
            ├── Просмотр файлов, ZIP и восстановление в новый каталог
            └── Restic (встроенный репозиторий и отдельные тома)

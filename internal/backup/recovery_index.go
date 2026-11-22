@@ -139,7 +139,9 @@ func validRecoveryTree(id string, rec portableRecord, native resticRecoverySnaps
 	switch rec.Kind {
 	case "postgres":
 		return rec.Consistency == "application_consistent" && rec.Fidelity == "logical_dump"
-	case "smb":
+	case postgres1CKind:
+		return rec.Consistency == "application_consistent" && rec.Fidelity == "logical_dump_split_config"
+	case "smb", smb1Kind:
 		return rec.Consistency == "best_effort" && rec.Fidelity == "content_and_timestamps"
 	case "local", "sftp":
 		return rec.Consistency == "best_effort" && rec.Fidelity == "basic_metadata"

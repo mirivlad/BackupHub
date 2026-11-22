@@ -48,8 +48,8 @@
  }
  const fmt=(v:string)=>{if(!v)return '—';const d=new Date(v);return Number.isNaN(d.getTime())?'—':d.toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'});};
  const size=(bytes:number)=>new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(bytes/1073741824)+' ГиБ';
- function sourceType(kind:string){return ({smb:'SMB',sftp:'SFTP',postgres:'PostgreSQL',local:'Локальный каталог'} as Record<string,string>)[kind]??kind;}
- function sourcePath(s:Source){return s.kind==='smb'?'//'+s.host+'/'+s.share+(s.path?'/'+s.path:''):s.kind==='postgres'?s.host+'/'+s.database:s.kind==='sftp'?s.host+':'+s.path:s.path;}
+ function sourceType(kind:string){return ({smb:'SMB2/3',smb1:'SMB1',sftp:'SFTP',postgres:'PostgreSQL',postgres_1c:'Postgres Pro для 1С',local:'Локальный каталог'} as Record<string,string>)[kind]??kind;}
+ function sourcePath(s:Source){return ['smb','smb1'].includes(s.kind)?'//'+s.host+'/'+s.share+(s.path?'/'+s.path:''):['postgres','postgres_1c'].includes(s.kind)?s.host+'/'+s.database:s.kind==='sftp'?s.host+':'+s.path:s.path;}
  function stateLabel(state:string){return ({completed:'Завершено',completed_with_warnings:'С предупреждениями',failed:'Ошибка',queued:'В очереди',preflight:'Проверка',preparing:'Подготовка',capturing:'Копирование',committing:'Сохранение',verifying:'Проверка данных',waiting_for_source:'Ожидание источника',interrupted:'Прервано',cancelled:'Отменено'} as Record<string,string>)[state]??state;}
  function scheduleText(p:Profile){
   if(!p)return '—';
@@ -227,7 +227,7 @@
     <div class="section-head"><h2>{editingSourceID?'Редактирование источника':'Новый источник'}</h2></div>
     <form class="form-grid" onsubmit={(e)=>{e.preventDefault();void saveSource();}}>
      <label>Название<input bind:value={sourceForm.name} maxlength="120" required placeholder="Документы"/></label>
-     <label>Тип источника<select bind:value={sourceForm.kind}><option value="smb">Сетевая папка SMB2/3</option><option value="sftp">Сервер Linux · SSH/SFTP</option><option value="local">Локальный каталог</option><option value="postgres">PostgreSQL</option></select></label>
+     <label>Тип источника<select bind:value={sourceForm.kind}><option value="smb">Сетевая папка SMB2/3</option><option value="smb1">Сетевая папка SMB1</option><option value="sftp">Сервер Linux · SSH/SFTP</option><option value="local">Локальный каталог</option><option value="postgres">PostgreSQL</option><option value="postgres_1c">Postgres Pro для 1С</option></select></label>
      {#if sourceForm.kind!=='local'}
       <label>Адрес сервера<input bind:value={sourceForm.host} required placeholder="server.example.com"/></label>
       <label>Пользователь<input bind:value={sourceForm.username} autocomplete="off" required/></label>
@@ -241,10 +241,10 @@
        {#if sourceForm.auth_method==='key'}
         <label class="full">Приватный ключ
          <textarea rows="7" bind:value={sourceForm.private_key} required={!editingSourceID} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
-         <small class="helper">Можно вставить содержимое ключа или загрузить файл. Ключ хранится в зашифрованном хранилище BackupHub.</small>
+         <small class="helper">Поддерживаются OpenSSH и PuTTY PPK (версии 2 и 3). Ключ хранится в зашифрованном хранилище BackupHub.</small>
         </label>
         <label class="full">Загрузить файл приватного ключа
-         <input type="file" accept=".key,.pem,.txt" onchange={async(e)=>{const file=e.currentTarget.files?.[0];if(file){if(file.size>65536){error='Файл ключа превышает 64 КиБ';return;}sourceForm.private_key=await file.text();}}}/>
+         <input type="file" accept=".key,.pem,.ppk,.txt" onchange={async(e)=>{const file=e.currentTarget.files?.[0];if(file){if(file.size>65536){error='Файл ключа превышает 64 КиБ';return;}sourceForm.private_key=await file.text();}}}/>
         </label>
         <label class="full">Парольная фраза к приватному ключу
          <input type="password" bind:value={sourceForm.key_passphrase} autocomplete="new-password" placeholder="Не требуется для незашифрованного ключа"/>
@@ -263,11 +263,13 @@
        </label>
       {/if}
      {/if}
-     {#if sourceForm.kind==='smb'}
+     {#if ['smb','smb1'].includes(sourceForm.kind)}
       <label>Общая папка<input bind:value={sourceForm.share} required placeholder="Shared"/></label>
       <label>Подкаталог<input bind:value={sourceForm.path} placeholder="Documents"/></label>
-     {:else if sourceForm.kind==='postgres'}
+      {#if sourceForm.kind==='smb1'}<p class="helper full">Выбирайте SMB1 для устройств, которым нужен этот протокол. Подключение требует NTLMv2 и подписывания SMB.</p>{/if}
+     {:else if ['postgres','postgres_1c'].includes(sourceForm.kind)}
       <label>База данных<input bind:value={sourceForm.database} required/></label>
+      {#if sourceForm.kind==='postgres_1c'}<p class="helper full">Данные public.config сохраняются отдельным двоичным потоком. Восстановление выполняется в совместимую отдельную базу.</p>{/if}
      {:else}
       <label class="full">Путь к каталогу<input bind:value={sourceForm.path} required placeholder="/home/user/.config"/></label>
      {/if}

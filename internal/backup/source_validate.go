@@ -26,7 +26,7 @@ func validateInput(in CreateSource, repo, state, stage string) error {
 				return errors.New("source overlaps BackupHub state/repository")
 			}
 		}
-	case "smb":
+	case "smb", smb1Kind:
 		if in.Host == "" || in.Share == "" || in.Username == "" || in.Password == "" {
 			return errors.New("SMB host/share/username/password required")
 		}
@@ -54,7 +54,7 @@ func validateInput(in CreateSource, repo, state, stage string) error {
 		} else {
 			return errors.New("unsupported SSH authentication method")
 		}
-	case "postgres":
+	case "postgres", postgres1CKind:
 		if in.Host == "" || in.Username == "" || in.Database == "" || in.Password == "" {
 			return errors.New("PostgreSQL host/user/database/password required")
 		}

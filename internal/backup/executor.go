@@ -93,7 +93,11 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 		consistency = "application_consistent"
 		fidelity = "logical_dump"
 	}
-	if source.Kind == "smb" {
+	if source.Kind == postgres1CKind {
+		consistency = "application_consistent"
+		fidelity = "logical_dump_split_config"
+	}
+	if source.Kind == "smb" || source.Kind == smb1Kind {
 		fidelity = "content_and_timestamps"
 	}
 	marker := portableRecord{ID: id, SourceID: source.ID, SourceName: source.Name, Kind: source.Kind, Root: root, ResticID: native, At: at, DataVerified: true, Consistency: consistency, Fidelity: fidelity}
@@ -148,10 +152,14 @@ func (s *Service) capture(ctx context.Context, sourceID, kind string, settings S
 	switch kind {
 	case "smb":
 		err = captureSMB(ctx, settings, password, root)
+	case smb1Kind:
+		err = captureSMB1(ctx, settings, password, root)
 	case "sftp":
 		err = s.captureSFTP(ctx, sourceID, settings, password, root)
 	case "postgres":
 		err = capturePostgres(ctx, settings, password, root)
+	case postgres1CKind:
+		err = capturePostgres1C(ctx, settings, password, root)
 	default:
 		err = errors.New("unsupported capture kind")
 	}

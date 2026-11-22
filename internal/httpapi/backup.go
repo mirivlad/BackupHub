@@ -59,7 +59,7 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			if !method(w, r, http.MethodGet) {
 				return
 			}
-			jsonResponse(w, 200, map[string]any{"engine": "restic", "connected": true, "supported_sources": []string{"local", "smb", "sftp", "postgres"}, "production_ready": false})
+			jsonResponse(w, 200, map[string]any{"engine": "restic", "connected": true, "supported_sources": []string{"local", "smb", "smb1", "sftp", "postgres", "postgres_1c"}, "production_ready": false})
 			return
 		case "storages":
 			switch r.Method {

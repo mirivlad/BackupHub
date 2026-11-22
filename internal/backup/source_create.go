@@ -19,12 +19,15 @@ func (s *Service) Create(ctx context.Context, input CreateSource) (Source, error
 		return empty, errors.New("invalid name")
 	}
 	switch input.Kind {
-	case "local", "smb", "sftp", "postgres":
+	case "local", "smb", smb1Kind, "sftp", "postgres", postgres1CKind:
 	default:
 		return empty, errors.New("unsupported source type")
 	}
 	if input.Kind == "sftp" && input.AuthMethod == "" {
 		input.AuthMethod = "password"
+	}
+	if err := normalizePPK(ctx, &input); err != nil {
+		return empty, err
 	}
 	if err := validateInput(input, s.repo.path, s.catalog.DataDir, s.stageDir); err != nil {
 		return empty, err

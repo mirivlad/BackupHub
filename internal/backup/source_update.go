@@ -59,11 +59,16 @@ func (s *Service) UpdateSource(ctx context.Context, id string, in CreateSource) 
 	if strings.TrimSpace(in.Name) == "" || utf8.RuneCountInString(in.Name) > 120 || strings.ContainsAny(in.Name, "\x00\r\n") {
 		return empty, errors.New("invalid source name")
 	}
-	if in.Kind != "local" && in.Kind != "smb" && in.Kind != "sftp" && in.Kind != "postgres" {
+	switch in.Kind {
+	case "local", "smb", smb1Kind, "sftp", "postgres", postgres1CKind:
+	default:
 		return empty, errors.New("unsupported source type")
 	}
 	if in.Kind == "sftp" && in.AuthMethod == "" {
 		in.AuthMethod = "password"
+	}
+	if err := normalizePPK(ctx, &in); err != nil {
+		return empty, err
 	}
 	var oldSettings Settings
 	_, oldSettings, oldRef, err = s.source(ctx, id)
