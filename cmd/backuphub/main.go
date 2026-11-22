@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"golang.org/x/term"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/mirivlad/BackupHub/internal/backup"
 	"github.com/mirivlad/BackupHub/internal/catalog"
 	"github.com/mirivlad/BackupHub/internal/httpapi"
+	"github.com/mirivlad/BackupHub/internal/servicejournal"
 	"github.com/mirivlad/BackupHub/internal/storagehelper"
 	"github.com/mirivlad/BackupHub/internal/vault"
 )
@@ -189,7 +191,9 @@ func run(args []string) error {
 		if (*tlsCert == "") != (*tlsKey == "") {
 			return fmt.Errorf("both TLS certificate and key are required")
 		}
-		handler := httpapi.NewWithBackup(c, v, svc)
+		journal := &servicejournal.Journal{}
+		slog.SetDefault(slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, journal), nil)))
+		handler := httpapi.NewWithBackupAndJournal(c, v, svc, journal)
 		if *uiDir != "" {
 			handler, err = httpapi.WithUI(handler, *uiDir)
 			if err != nil {

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build an installable Debian/Ubuntu amd64 package from already-tested binaries.
 set -eu
-VERSION="${1:-0.5.1}"
+VERSION="${1:-0.6.0}"
 ROOT="${2:-dist}"
 ARCH="${3:-amd64}"
 BASE="$ROOT/backuphub_${VERSION}_${ARCH}"
@@ -24,7 +24,7 @@ Recommends: putty-tools, smbclient
 Description: Self-hosted backup, version history and restoration system
  BackupHub provides a Go daemon, Svelte web interface, SMB1/2/3, SFTP, PostgreSQL
  and Postgres Pro for 1C sources, scheduled Restic snapshots (password-protected or passwordless),
- browser downloads and safe alternate-directory restoration.
+ integrity checks, browser downloads and safe alternate-directory restoration.
  See project documentation for supported sources and safety limitations.
 CONTROL
 dpkg-deb --build --root-owner-group "$BASE" "$ROOT/backuphub_${VERSION}_${ARCH}.deb"

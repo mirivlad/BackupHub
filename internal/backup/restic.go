@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"mime"
 	"net/http"
 	"os"
@@ -268,6 +267,19 @@ func openRepositoryNamed(ctx context.Context, stateDir, repoPath, keyPath string
 }
 
 func openRepositoryNamedMode(ctx context.Context, stateDir, repoPath, keyPath, mode string) (*repository, error) {
+	r, err := existingRepository(repoPath, keyPath, mode)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = r.run(ctx, nil, "cat", "config"); err != nil {
+		return nil, fmt.Errorf("cannot open repository: %w", err)
+	}
+	return r, nil
+}
+
+// Look up paths and credentials without starting a Restic read operation.
+// The requested command negotiates its own Restic lock.
+func existingRepository(repoPath, keyPath, mode string) (*repository, error) {
 	if !validPasswordMode(mode) {
 		return nil, errors.New("invalid repository password mode")
 	}
@@ -313,9 +325,6 @@ func openRepositoryNamedMode(ctx context.Context, stateDir, repoPath, keyPath, m
 	if !config.Mode().IsRegular() {
 		return nil, errors.New("invalid restic repository config")
 	}
-	if _, err = r.run(ctx, nil, "cat", "config"); err != nil {
-		return nil, fmt.Errorf("cannot unlock storage: %w", err)
-	}
 	return r, nil
 }
 
@@ -353,25 +362,8 @@ func isResticLockConflict(err error) bool {
 		(exit.ExitCode() == 1 && strings.Contains(err.Error(), "repository is already locked")))
 }
 
-func (r *repository) retryAfterStaleLock(ctx context.Context, run func() error) error {
-	err := run()
-	if ctx.Err() != nil || !isResticLockConflict(err) {
-		return err
-	}
-	// Invalid lock data can also cause exit code 11.
-	if !strings.Contains(err.Error(), "repository is already locked") {
-		return errors.Join(errResticRepositoryLocked, err)
-	}
-	unlockCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	output, unlockErr := r.run(unlockCtx, nil, "unlock")
-	if unlockErr != nil {
-		return errors.Join(errResticRepositoryLocked, err, unlockErr)
-	}
-	if detail := strings.TrimSpace(string(output)); detail != "" {
-		slog.InfoContext(ctx, "restic stale locks cleared", "repository", r.path, "detail", detail)
-	}
-	err = run()
+// Stock Restic unlock can remove a live lock based solely on its age.
+func resticLockError(err error) error {
 	if isResticLockConflict(err) {
 		return errors.Join(errResticRepositoryLocked, err)
 	}
@@ -504,20 +496,6 @@ func (r *repository) commit(ctx context.Context, rec portableRecord) (string, er
 	}
 	return id, nil
 }
-func (r *repository) check(ctx context.Context, allData bool) error {
-	args := []string{"check"}
-	if allData {
-		args = append(args, "--read-data")
-	}
-	cmd := r.command(ctx, nil, args...)
-	var stdout, stderr boundedOutput
-	stdout.max, stderr.max = 8192, 8192
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("restic check: %w\n%s", err, strings.TrimSpace(stderr.String()+"\n"+stdout.String()))
-	}
-	return nil
-}
 
 type treeEntry struct {
 	Path  string    `json:"path"`
@@ -525,6 +503,7 @@ type treeEntry struct {
 	Type  string    `json:"type"`
 	Size  uint64    `json:"size"`
 	Mode  uint32    `json:"mode"`
+	Inode uint64    `json:"inode"`
 	MTime time.Time `json:"mtime"`
 }
 
@@ -549,23 +528,38 @@ func (r *repository) walkTree(ctx context.Context, id string, visit func(treeEnt
 	}
 	return r.readStream(ctx, func(reader io.Reader) error {
 		decoder := json.NewDecoder(reader)
+		snapshotSeen := false
 		for {
 			var raw struct {
 				StructType string    `json:"struct_type"`
+				ID         string    `json:"id"`
 				Path       string    `json:"path"`
 				Name       string    `json:"name"`
 				Type       string    `json:"type"`
 				Size       uint64    `json:"size"`
 				Mode       uint32    `json:"mode"`
+				Inode      uint64    `json:"inode"`
 				MTime      time.Time `json:"mtime"`
 			}
 			if err := decoder.Decode(&raw); errors.Is(err, io.EOF) {
+				if !snapshotSeen {
+					return errors.New("Restic did not return snapshot tree metadata")
+				}
 				return nil
 			} else if err != nil {
 				return err
 			}
-			if raw.StructType == "node" {
-				entry := treeEntry{Path: raw.Path, Name: raw.Name, Type: raw.Type, Size: raw.Size, Mode: raw.Mode, MTime: raw.MTime}
+			switch raw.StructType {
+			case "snapshot":
+				if snapshotSeen || raw.ID != id {
+					return errors.New("Restic returned unexpected snapshot tree metadata")
+				}
+				snapshotSeen = true
+			case "node":
+				if !snapshotSeen {
+					return errors.New("Restic returned a tree node before snapshot metadata")
+				}
+				entry := treeEntry{Path: raw.Path, Name: raw.Name, Type: raw.Type, Size: raw.Size, Mode: raw.Mode, Inode: raw.Inode, MTime: raw.MTime}
 				if err := visit(entry); err != nil {
 					return err
 				}

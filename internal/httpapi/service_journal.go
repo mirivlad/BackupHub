@@ -1,15 +1,6 @@
 package httpapi
 
-import (
-	"context"
-	"io"
-	"net/http"
-	"os/exec"
-	"strings"
-	"time"
-)
-
-const journalMaxBytes = 512 << 10
+import "net/http"
 
 type journalTail struct {
 	Text      string `json:"text"`
@@ -32,41 +23,9 @@ func (s *Server) serviceJournal(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusTooManyRequests, map[string]string{"error": "Слишком частые запросы к журналу службы"})
 		return
 	}
-	tail, err := readServiceJournal(r.Context(), "/usr/bin/journalctl")
-	if err != nil {
-		jsonResponse(w, http.StatusServiceUnavailable, map[string]string{"error": "Журнал systemd для BackupHub недоступен"})
-		return
+	var tail journalTail
+	if s.journal != nil {
+		tail.Text, tail.Truncated = s.journal.Tail()
 	}
 	jsonResponse(w, http.StatusOK, tail)
-}
-
-func readServiceJournal(ctx context.Context, binary string) (journalTail, error) {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	// Use the daemon's existing read permissions. Keep the unit and every
-	// argument fixed so callers can only see BackupHub's service journal.
-	cmd := exec.CommandContext(ctx, binary, "--system", "--unit=backuphub.service",
-		"--lines=100", "--output=short-iso", "--reverse", "--no-pager", "--quiet")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return journalTail{}, err
-	}
-	if err = cmd.Start(); err != nil {
-		return journalTail{}, err
-	}
-	data, readErr := io.ReadAll(io.LimitReader(stdout, journalMaxBytes+1))
-	if len(data) > journalMaxBytes || readErr != nil {
-		_ = cmd.Process.Kill()
-	}
-	waitErr := cmd.Wait()
-	if readErr != nil {
-		return journalTail{}, readErr
-	}
-	if len(data) > journalMaxBytes {
-		return journalTail{Text: strings.TrimSpace(string(data[:journalMaxBytes])), Truncated: true}, nil
-	}
-	if waitErr != nil {
-		return journalTail{}, waitErr
-	}
-	return journalTail{Text: strings.TrimSpace(string(data))}, nil
 }

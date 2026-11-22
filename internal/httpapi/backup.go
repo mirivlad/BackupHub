@@ -43,6 +43,14 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, 404, map[string]string{"error": "resource not found"})
 			return
 		}
+		if errors.Is(err, backup.ErrVerificationBusy) {
+			jsonResponse(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		if errors.Is(err, backup.ErrRestoreCheckUnsupported) {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		if errors.Is(err, backup.ErrJobAlreadyRunning) {
 			jsonResponse(w, http.StatusConflict, map[string]string{"error": "Задание уже выполняется или ожидает запуска. Повторный запуск невозможен до завершения."})
 			return
@@ -282,6 +290,70 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if len(path) == 3 && path[0] == "storages" {
+		id, operation := path[1], path[2]
+		switch operation {
+		case "checks":
+			switch r.Method {
+			case http.MethodGet:
+				checks, err := s.backup.StorageChecks(r.Context(), id)
+				if err != nil {
+					fail(err)
+					return
+				}
+				jsonResponse(w, http.StatusOK, checks)
+			case http.MethodPost:
+				if !canBackup {
+					jsonResponse(w, http.StatusForbidden, map[string]string{"error": "backup permission required"})
+					return
+				}
+				var input struct {
+					Mode string `json:"mode"`
+				}
+				if !decode(w, r, &input) {
+					return
+				}
+				run, err := s.backup.QueueRepositoryCheck(r.Context(), id, input.Mode)
+				if err != nil {
+					fail(err)
+					return
+				}
+				s.backup.Audit(r.Context(), user.ID, "storage.check_queued", run.ID)
+				jsonResponse(w, http.StatusAccepted, run)
+			default:
+				w.Header().Set("Allow", "GET, POST")
+				jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			}
+			return
+		case "check-schedule":
+			if !method(w, r, http.MethodPut) {
+				return
+			}
+			if !isAdmin {
+				jsonResponse(w, http.StatusForbidden, map[string]string{"error": "administrator required"})
+				return
+			}
+			var input struct {
+				Mode          string `json:"mode"`
+				IntervalHours *int   `json:"interval_hours"`
+			}
+			if !decode(w, r, &input) {
+				return
+			}
+			if input.IntervalHours == nil {
+				jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "укажите период проверки"})
+				return
+			}
+			schedule, err := s.backup.SetCheckSchedule(r.Context(), id, input.Mode, *input.IntervalHours)
+			if err != nil {
+				fail(err)
+				return
+			}
+			s.backup.Audit(r.Context(), user.ID, "storage.check_schedule_updated", id)
+			jsonResponse(w, http.StatusOK, schedule)
+			return
+		}
+	}
 	if len(path) == 2 && path[0] == "storages" {
 		if !isAdmin {
 			jsonResponse(w, 403, map[string]string{"error": "administrator required"})
@@ -325,6 +397,32 @@ func (s *Server) backupAPI(w http.ResponseWriter, r *http.Request) {
 	if len(path) == 3 && path[0] == "snapshots" {
 		id, operation := path[1], path[2]
 		switch operation {
+		case "restore-checks":
+			switch r.Method {
+			case http.MethodGet:
+				runs, err := s.backup.RestoreChecks(r.Context(), id)
+				if err != nil {
+					fail(err)
+					return
+				}
+				jsonResponse(w, http.StatusOK, map[string]any{"runs": runs})
+			case http.MethodPost:
+				if !canRestore {
+					jsonResponse(w, http.StatusForbidden, map[string]string{"error": "restore permission required"})
+					return
+				}
+				run, err := s.backup.QueueRestoreCheck(r.Context(), id)
+				if err != nil {
+					fail(err)
+					return
+				}
+				s.backup.Audit(r.Context(), user.ID, "snapshot.restore_check_queued", run.ID)
+				jsonResponse(w, http.StatusAccepted, run)
+			default:
+				w.Header().Set("Allow", "GET, POST")
+				jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			}
+			return
 		case "files":
 			if !method(w, r, http.MethodGet) {
 				return
@@ -428,7 +526,7 @@ func publicError(err error) string {
 		return "Для хранения без пароля нужен Restic версии 0.17.0 или новее"
 	}
 	msg := err.Error()
-	for _, safe := range []string{"invalid cron rule", "unknown schedule timezone", "invalid schedule timezone", "invalid first run", "first run date and time required", "invalid interval", "invalid scheduling mode", "invalid weekdays", "choose weekdays", "choose minutes", "source not found", "cannot edit", "invalid source name", "unsupported source type", "local source overlaps", "local source must be", "source overlaps", "SMB host", "SFTP host", "SFTP password", "PostgreSQL host", "invalid source or storage", "invalid job name", "destination storage unavailable"} {
+	for _, safe := range []string{"неизвестный режим проверки хранилища", "выберите режим проверки и период", "invalid cron rule", "unknown schedule timezone", "invalid schedule timezone", "invalid first run", "first run date and time required", "invalid interval", "invalid scheduling mode", "invalid weekdays", "choose weekdays", "choose minutes", "source not found", "cannot edit", "invalid source name", "unsupported source type", "local source overlaps", "local source must be", "source overlaps", "SMB host", "SFTP host", "SFTP password", "PostgreSQL host", "invalid source or storage", "invalid job name", "destination storage unavailable"} {
 		if strings.HasPrefix(msg, safe) {
 			if strings.HasPrefix(msg, "invalid cron rule") {
 				return "Некорректное правило расписания: проверьте выбор минут, часов и дней"

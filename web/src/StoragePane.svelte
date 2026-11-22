@@ -1,10 +1,14 @@
 <script lang="ts">
  import {onMount} from 'svelte';
- type Storage={id:string;name:string;path:string;free_bytes:number;status:string;password_mode:'password'|'no_password'};
+ import StorageVerification from './StorageVerification.svelte';
+ import {checkDate,checkLabel,checkTone,type CheckStatus} from './verification';
+ type Storage={id:string;name:string;path:string;free_bytes:number;status:string;password_mode:'password'|'no_password';metadata_check:CheckStatus;data_check:CheckStatus};
  type Mount={path:string;filesystem:string;free_bytes:number};
  type Entry={name:string;path:string};
- let {onCreated}:{onCreated:()=>Promise<void>}=$props();
+ let {onCreated,canConfigure,canRun}:{onCreated:()=>Promise<void>;canConfigure:boolean;canRun:boolean}=$props();
+ let checkID=$state('');
  let storages=$state<Storage[]>([]);
+ const checkStorage=$derived(storages.find(storage=>storage.id===checkID));
  let mounts=$state<Mount[]>([]);
  let entries=$state<Entry[]>([]);
  let chosen=$state('');
@@ -24,12 +28,27 @@
   if(!response.ok)throw new Error(data&&typeof data==='object'&&'error' in data?String((data as {error:unknown}).error):'HTTP '+response.status);
   return data as T;
  }
+ let refreshing=false;
+ async function refreshStorages(){
+  if(refreshing)return;
+  refreshing=true;
+  try{
+   storages=(await request<{storages:Storage[]}>('/storages')).storages;
+  }finally{refreshing=false;}
+ }
  async function load(){
   busy=true;error='';
   try{
-   const [a,b,settings]=await Promise.all([request<{storages:Storage[]}>('/storages'),request<{mounts:Mount[]}>('/storages/mounts'),
-    fetch('/api/v1/system/settings',{credentials:'same-origin'}).then(async response=>{const data=await response.json();if(!response.ok)throw new Error(data.error??'Настройки недоступны');return data as {default_repository_password_mode:'password'|'no_password'}})]);
-   storages=a.storages;mounts=b.mounts;passwordMode=settings.default_repository_password_mode;
+   const tasks=[refreshStorages()];
+   if(canConfigure){
+    tasks.push(request<{mounts:Mount[]}>('/storages/mounts').then(data=>{mounts=data.mounts;}));
+    tasks.push(fetch('/api/v1/system/settings',{credentials:'same-origin'}).then(async response=>{
+     const data=await response.json();
+     if(!response.ok)throw new Error(data.error??'Настройки недоступны');
+     passwordMode=data.default_repository_password_mode;
+    }));
+   }
+   await Promise.all(tasks);
   }catch(e){error=e instanceof Error?e.message:'Список дисков недоступен';}
   finally{busy=false;}
  }
@@ -59,7 +78,11 @@
   const p=chosen.slice(0,chosen.lastIndexOf('/'));
   void browse(p.startsWith(m.path)?p:m.path);
  }
- onMount(()=>{void load();});
+ onMount(()=>{
+  void load();
+  const poll=setInterval(()=>{if(!busy)void refreshStorages().catch(()=>{});},5000);
+  return ()=>clearInterval(poll);
+ });
 </script>
 <section class="detail-card">
  <div class="storage-heading"><div><h2>Подключённые хранилища</h2><p class="secondary">Подключённые тома и доступное место для резервных копий.</p></div><button class="outline" onclick={()=>void load()} disabled={busy}>Обновить диски</button></div>
@@ -67,9 +90,26 @@
  {#if notice}<p class="notice" role="status">{notice}</p>{/if}
  <div class="storage-grid">
   {#each storages as s (s.id)}
-   <div class="storage-item"><strong>{s.name}</strong><code>{s.path}</code><small>{s.status==='available'?'Доступно · свободно '+gb(s.free_bytes):'Недоступно — задания будут завершаться ошибкой'}</small><small>{s.password_mode==='no_password'?'Без пароля':'С паролем (нужен ключ)'}</small>{#if s.id==='primary'}<small>Встроенное хранилище для совместимости</small>{/if}</div>
+   <div class="storage-item">
+    <strong>{s.name}</strong><code>{s.path}</code>
+    <small>{s.status==='available'?'Доступно · свободно '+gb(s.free_bytes):'Недоступно'}</small>
+    <small>{s.password_mode==='no_password'?'Без пароля':'С паролем (нужен ключ)'}</small>
+    {#each [{label:'Метаданные',check:s.metadata_check},{label:'Все данные',check:s.data_check}] as {label,check}}
+     <div class="storage-status">
+      <small>{label}</small>
+      <span class={'check-badge '+checkTone(check.state)} title={check.finished_at ? checkDate(check.finished_at) : ''}>{checkLabel(check.state)}</span>
+     </div>
+    {/each}
+    <button class="outline" aria-expanded={checkID===s.id} onclick={()=>checkID=checkID===s.id?'':s.id}>Проверки хранилища</button>
+   </div>
   {/each}
  </div>
+ {#if checkStorage}
+  {#key checkStorage.id}
+   <StorageVerification id={checkStorage.id} name={checkStorage.name} {canConfigure} {canRun} {request} {refreshStorages}/>
+  {/key}
+ {/if}
+ {#if canConfigure}
  <h3>Добавить новое хранилище</h3>
  <p class="secondary">Выберите диск и каталог для сохранения резервных копий.</p>
  {#if mounts.length===0}
@@ -105,11 +145,13 @@
    </div>
   {/if}
  {/if}
+ {/if}
 </section>
 <style>
  .storage-heading{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px}
  .storage-heading h2{margin:0 0 6px}.storage-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:20px}
  .storage-item{display:grid;gap:7px;padding:13px;border:1px solid var(--line);border-radius:9px}.storage-item code{overflow-wrap:anywhere}.storage-item small{opacity:.75}
+ .storage-status{display:flex;align-items:center;justify-content:space-between;gap:8px}
  .mount-list{display:flex;gap:9px;flex-wrap:wrap}.mount-list button{white-space:normal;text-align:left}
  .storage-browser{margin-top:14px;border:1px solid var(--line);border-radius:9px;padding:14px}.storage-folders{display:flex;gap:8px;flex-wrap:wrap;max-height:210px;overflow:auto;margin-bottom:14px}
  .storage-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;align-items:end}

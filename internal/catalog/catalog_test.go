@@ -84,6 +84,8 @@ func TestV4ToV5PreservesBackupScheduleDestination(t *testing.T){
  if err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("DROP TABLE system_settings");err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("DROP TABLE schedule_repositories");err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("DROP TABLE verification_runs");err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("DROP TABLE repository_check_schedules");err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("DROP TABLE storage_repositories");err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("PRAGMA user_version=4");err!=nil{t.Fatal(err)}
  if err=c.Close();err!=nil{t.Fatal(err)}
@@ -110,6 +112,8 @@ func TestV5ToV6DefaultsExistingRepositoriesToProtected(t *testing.T){
  // The FK from schedule_repositories references storage_repositories.
  // Preserve its data by disabling FK checks while doing the schema swap.
  if _,err=c.DB.Exec("PRAGMA foreign_keys=OFF");err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("DROP TABLE verification_runs");err!=nil{t.Fatal(err)}
+ if _,err=c.DB.Exec("DROP TABLE repository_check_schedules");err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("DROP TABLE storage_repositories");err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("ALTER TABLE old_repositories RENAME TO storage_repositories");err!=nil{t.Fatal(err)}
  if _,err=c.DB.Exec("PRAGMA foreign_keys=ON");err!=nil{t.Fatal(err)}

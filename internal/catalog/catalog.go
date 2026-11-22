@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 12
+const SchemaVersion = 13
 
 // Catalog stores operational state; the portable repository manifest must
 // remain sufficient for rebuilding the snapshot index after database loss.
@@ -378,6 +378,11 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			if _, err = tx.ExecContext(ctx, statement); err != nil {
 				return fmt.Errorf("v12 snapshot and SMB migration: %w", err)
 			}
+		}
+	}
+	if version < 13 {
+		if err = migrateVerificationV13(ctx, tx); err != nil {
+			return err
 		}
 	}
 	if _, err = tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", SchemaVersion)); err != nil {

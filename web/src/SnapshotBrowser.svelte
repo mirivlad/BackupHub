@@ -2,8 +2,10 @@
  import {onMount} from 'svelte';
  import SnapshotFolderTree from './SnapshotFolderTree.svelte';
  import NavIcon from './NavIcon.svelte';
+ import SnapshotVerification from './SnapshotVerification.svelte';
+ import type {CheckStatus} from './verification';
 
- type Snapshot={id:string;source_name:string;created_at:string};
+ type Snapshot={id:string;source_name:string;created_at:string;restore_check:CheckStatus;can_test_restore:boolean};
  type FileEntry={path:string;name:string;type:'file'|'dir'|'other';size:number;modified:string};
  type BrowsePage={files:FileEntry[];directory:string;search?:string;offset:number;limit:number;has_more:boolean};
  let {snapshot,canExport,onClose}:{snapshot:Snapshot;canExport:boolean;onClose:()=>void}=$props();
@@ -147,6 +149,7 @@
   </div>
   <button class="close-browser" type="button" onclick={onClose} title="Закрыть просмотр">Закрыть <span aria-hidden="true">×</span></button>
  </div>
+ {#if snapshot.can_test_restore}<SnapshotVerification id={snapshot.id} status={snapshot.restore_check} canRun={canExport}/>{/if}
  <div class="browser-toolbar">
   <nav class="breadcrumbs" aria-label="Путь к папке">
    {#each breadcrumbs as crumb,i(crumb.path)}

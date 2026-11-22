@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func waitForResticLock(t *testing.T, repo *repository) {
 	t.Fatal("Restic did not acquire a test lock")
 }
 
-func TestScheduledBackupRecoversStaleResticLock(t *testing.T) {
+func TestScheduledBackupPreservesActiveAndStaleResticLocks(t *testing.T) {
 	requireIntegrationRestic(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -65,6 +66,20 @@ func TestScheduledBackupRecoversStaleResticLock(t *testing.T) {
 		t.Fatalf("unexpected journal result for a live lock: %#v %v", runs, err)
 	}
 
+	check, err := service.QueueRepositoryCheck(ctx, PrimaryStorageID, "metadata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.executeVerification(ctx, check)
+	if done := waitVerification(t, service, check.ID, terminalVerification); done.State != "failed" ||
+		!strings.Contains(done.Detail, "заблокирован") {
+		t.Fatalf("maintenance did not report the live lock: %+v", done)
+	}
+	if err = holder.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("live Restic lock holder was touched: %v", err)
+	}
+	waitForResticLock(t, service.repo)
+
 	// An uncatchable termination leaves the real Restic lock on disk.
 	if err = holder.Process.Kill(); err != nil {
 		t.Fatal(err)
@@ -74,8 +89,19 @@ func TestScheduledBackupRecoversStaleResticLock(t *testing.T) {
 	if err = service.Manual(ctx, job.ID); err != nil {
 		t.Fatal(err)
 	}
+	if ran, err := service.scheduler.RunDue(ctx); !ran || !errors.Is(err, errResticRepositoryLocked) {
+		t.Fatalf("an abandoned lock requires operator review: ran=%v err=%v", ran, err)
+	}
+	waitForResticLock(t, service.repo)
+	// The fixture owns the only lock and has reaped its holder.
+	if _, err := service.repo.run(ctx, nil, "unlock"); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.Manual(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
 	if ran, err := service.scheduler.RunDue(ctx); !ran || err != nil {
-		t.Fatalf("the next backup must recover the stale lock: ran=%v err=%v", ran, err)
+		t.Fatalf("the next backup must work after the lock is cleared: ran=%v err=%v", ran, err)
 	}
 	snapshots, err := service.ListSnapshots(ctx, source.ID)
 	if err != nil || len(snapshots) != 1 {

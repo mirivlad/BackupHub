@@ -27,13 +27,15 @@ func pathOverlaps(a, b string) bool {
 }
 
 type Storage struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Path         string `json:"path"`
-	MountPath    string `json:"mount_path,omitempty"`
-	PasswordMode string `json:"password_mode"`
-	FreeBytes    uint64 `json:"free_bytes"`
-	Status       string `json:"status"`
+	ID            string      `json:"id"`
+	Name          string      `json:"name"`
+	Path          string      `json:"path"`
+	MountPath     string      `json:"mount_path,omitempty"`
+	PasswordMode  string      `json:"password_mode"`
+	FreeBytes     uint64      `json:"free_bytes"`
+	Status        string      `json:"status"`
+	MetadataCheck CheckStatus `json:"metadata_check"`
+	DataCheck     CheckStatus `json:"data_check"`
 }
 
 type CreateStorage struct {
@@ -62,41 +64,68 @@ func ensurePrimaryStorage(ctx context.Context, c *catalog.Catalog, path string) 
 }
 
 func (s *Service) ListStorages(ctx context.Context) ([]Storage, error) {
-	rows, err := s.catalog.DB.QueryContext(ctx, "SELECT id,display_name,path,mount_path,password_mode FROM storage_repositories ORDER BY created_at,id")
+	rows, err := s.catalog.DB.QueryContext(ctx, `SELECT s.id,s.display_name,s.path,s.mount_path,s.password_mode,
+		COALESCE(m.state,''),m.finished_at,COALESCE(d.state,''),d.finished_at,
+		COALESCE(c.mode,''),COALESCE(c.interval_hours,0)
+	 FROM storage_repositories s
+	 LEFT JOIN repository_check_schedules c ON c.repository_id=s.id
+	 LEFT JOIN verification_runs m ON m.id=(
+	   SELECT v.id FROM verification_runs v WHERE v.repository_id=s.id AND v.kind='metadata'
+	   ORDER BY v.queued_at DESC,v.id DESC LIMIT 1)
+	 LEFT JOIN verification_runs d ON d.id=(
+	   SELECT v.id FROM verification_runs v WHERE v.repository_id=s.id AND v.kind='data'
+	   ORDER BY v.queued_at DESC,v.id DESC LIMIT 1)
+	 ORDER BY s.created_at,s.id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []Storage{}
+	now := time.Now()
 	for rows.Next() {
 		var x Storage
-		if err = rows.Scan(&x.ID, &x.Name, &x.Path, &x.MountPath, &x.PasswordMode); err != nil {
+		var metadata, data, mode string
+		var metadataAt, dataAt sql.NullInt64
+		var hours int
+		if err = rows.Scan(&x.ID, &x.Name, &x.Path, &x.MountPath, &x.PasswordMode,
+			&metadata, &metadataAt, &data, &dataAt, &mode, &hours); err != nil {
 			return nil, err
 		}
-		var stats syscall.Statfs_t
-		if x.MountPath != "" && !storagehelper.MountPresent(x.MountPath) {
-			x.Status = "unavailable"
-			out = append(out, x)
-			continue
+		metadataAge, dataAge := defaultCheckFreshness, defaultCheckFreshness
+		if hours > 0 && mode == "metadata" {
+			metadataAge = time.Duration(hours) * time.Hour
 		}
-		if e := syscall.Statfs(x.Path, &stats); e == nil {
-			x.FreeBytes = stats.Bavail * uint64(stats.Bsize)
-			x.Status = "available"
-			if _, err = os.Stat(filepath.Join(x.Path, "config")); err != nil {
-				x.Status = "unavailable"
-				x.FreeBytes = 0
-			}
-		} else {
-			x.Status = "unavailable"
+		if hours > 0 && mode == "data" {
+			dataAge = time.Duration(hours) * time.Hour
 		}
+		x.MetadataCheck = checkStatus(metadata, metadataAt, metadataAge, now)
+		x.DataCheck = checkStatus(data, dataAt, dataAge, now)
 		out = append(out, x)
 	}
-	return out, rows.Err()
+	if err = errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	// Filesystem probes never hold the catalog connection.
+	for i := range out {
+		x := &out[i]
+		x.Status = "unavailable"
+		if x.MountPath != "" && !storagehelper.MountPresent(x.MountPath) {
+			continue
+		}
+		var stats syscall.Statfs_t
+		if syscall.Statfs(x.Path, &stats) == nil {
+			if info, err := os.Lstat(filepath.Join(x.Path, "config")); err == nil && info.Mode().IsRegular() {
+				x.FreeBytes = stats.Bavail * uint64(stats.Bsize)
+				x.Status = "available"
+			}
+		}
+	}
+	return out, nil
 }
 
 func (s *Service) repositoryFor(ctx context.Context, id string) (*repository, error) {
 	if id == "" || id == PrimaryStorageID {
-		return s.repo, nil
+		return existingRepository(s.repo.path, s.repo.passwordFile, PasswordMode)
 	}
 	if !safeID(id) {
 		return nil, errors.New("invalid repository id")
@@ -115,7 +144,7 @@ func (s *Service) repositoryFor(ctx context.Context, id string) (*repository, er
 		return nil, errors.New("repository overlaps primary storage")
 	}
 	key := filepath.Join(s.catalog.DataDir, "restic-"+id+".key")
-	return openRepositoryNamedMode(ctx, s.catalog.DataDir, path, key, mode)
+	return existingRepository(path, key, mode)
 }
 
 func (s *Service) taskRepository(ctx context.Context, scheduleID string) (string, error) {
@@ -220,7 +249,8 @@ func (s *Service) registerStorage(ctx context.Context, name, repoPath, mountPath
 	if err != nil {
 		return empty, err
 	}
-	return Storage{ID: id, Name: name, Path: repoPath, MountPath: mountPath, Status: "available", PasswordMode: mode}, nil
+	return Storage{ID: id, Name: name, Path: repoPath, MountPath: mountPath, Status: "available", PasswordMode: mode,
+		MetadataCheck: CheckStatus{State: "unknown"}, DataCheck: CheckStatus{State: "unknown"}}, nil
 }
 
 func (s *Service) ProvisionStorage(ctx context.Context, in CreateStorage) (Storage, error) {

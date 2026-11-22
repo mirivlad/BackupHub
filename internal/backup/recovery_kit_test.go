@@ -34,6 +34,13 @@ func TestRecoveryKitRoundTripWithLiveWAL(t *testing.T) {
 	if err = service.vault.Put(ctx, "recovery-fixture", []byte("before export")); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = service.SetCheckSchedule(ctx, protected.ID, "metadata", 24); err != nil {
+		t.Fatal(err)
+	}
+	check, err := service.QueueRepositoryCheck(ctx, protected.ID, "metadata")
+	if err != nil {
+		t.Fatal(err)
+	}
 	root := privateDir(t)
 	kit := filepath.Join(root, "kit")
 	if err = ExportRecoveryKit(ctx, service.catalog, kit); err != nil {
@@ -78,6 +85,15 @@ func TestRecoveryKitRoundTripWithLiveWAL(t *testing.T) {
 	var enabled, pending int
 	if err = c.DB.QueryRowContext(ctx, "SELECT enabled, manual_pending FROM schedule_entries WHERE id=?", job.ID).Scan(&enabled, &pending); err != nil || enabled != 0 || pending != 0 {
 		t.Fatalf("restored schedule enabled=%d, pending=%d: %v", enabled, pending, err)
+	}
+	var state string
+	if err = c.DB.QueryRowContext(ctx, "SELECT state FROM verification_runs WHERE id=?", check.ID).Scan(&state); err != nil || state != "interrupted" {
+		t.Fatalf("restored queued check has state %q: %v", state, err)
+	}
+	var paused bool
+	if err = c.DB.QueryRowContext(ctx, "SELECT next_run IS NULL FROM repository_check_schedules WHERE repository_id=?", protected.ID).
+		Scan(&paused); err != nil || !paused {
+		t.Fatalf("restored storage schedule paused=%v: %v", paused, err)
 	}
 	if err = RestoreRecoveryKit(ctx, kit, target); err == nil {
 		t.Fatal("restored over an existing state directory")

@@ -18,7 +18,7 @@ When preflight returns `ErrSourceUnavailable` during a planned run, a task recor
 
 The due-task claim and new-run creation are one SQLite transaction; the active run ID prevents overlap even when polls race. Phase changes are persisted before continuing. The final state and next run are committed together. On restart, an explicit `RecoverInterrupted` reconciles abandoned active runs and avoids false successes.
 
-The service processes one backup at a time. Each backup currently checks all data in its destination repository, which can delay queued jobs. Each catalog supports one running instance. Recovered state pauses restored schedules until the operator enables them.
+The service processes one backup at a time. Each backup reads its new snapshot before publishing it. Repository-wide checks use an independent queue and reserve only the target repository. An overlapping scheduled backup waits for the next preflight retry. See the [verification runbook](verification.md). Each catalog supports one running instance. Recovered state pauses restored schedules until the operator enables them.
 
 ## Tests
 

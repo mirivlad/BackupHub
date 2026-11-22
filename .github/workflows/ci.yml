@@ -83,12 +83,12 @@ jobs:
           if file dist/backuphub | grep -q 'dynamically linked'; then echo 'DEB binary must not depend on the CI runner glibc'; exit 1; fi
       - name: Create and inspect .deb
         run: |
-          sh packaging/debian/build.sh 0.5.1
-          dpkg-deb -c dist/backuphub_0.5.1_amd64.deb | grep '/usr/share/backuphub/web/index.html'
-          dpkg-deb -c dist/backuphub_0.5.1_amd64.deb | grep '/lib/systemd/system/backuphub.service'
+          sh packaging/debian/build.sh 0.6.0
+          dpkg-deb -c dist/backuphub_0.6.0_amd64.deb | grep '/usr/share/backuphub/web/index.html'
+          dpkg-deb -c dist/backuphub_0.6.0_amd64.deb | grep '/lib/systemd/system/backuphub.service'
       - name: Install Debian package and test HTTPS service
         run: |
-          sudo apt-get install -y ./dist/backuphub_0.5.1_amd64.deb
+          sudo apt-get install -y ./dist/backuphub_0.6.0_amd64.deb
           # postinst starts the daemon and initializes Restic; do not interrupt it.
           ready=false
           for i in $(seq 1 30); do
@@ -208,6 +208,37 @@ jobs:
           test -n "$restored"
           sudo grep -x 'backuphub-roundtrip' "$restored/Video/clip.txt"
           test ! -f /opt/backuphub-smoke/Video/clip.txt
+          # Check the separate maintenance ledger through the packaged API.
+          missing_csrf="$(curl -ksS -o /dev/null -w '%{http_code}' -b "$cookies" -X POST "$api/backup/snapshots/$snapshot/restore-checks")"
+          test "$missing_csrf" = "403"
+          curl -fksS -b "$cookies" "${headers[@]}" -X PUT \
+            -d '{"mode":"metadata","interval_hours":168}' "$api/backup/storages/primary/check-schedule" |
+            python3 -c 'import json,sys;s=json.load(sys.stdin);assert s["interval_hours"]==168 and s["next_run"]'
+          wait_check() {
+            local endpoint="$1" id="$2" state=""
+            for i in $(seq 1 45); do
+              response="$(curl -fksS -b "$cookies" "$endpoint")"
+              state="$(printf '%s' "$response" | python3 -c 'import json,sys;print(next(r["state"] for r in json.load(sys.stdin)["runs"] if r["id"]==sys.argv[1]))' "$id")"
+              case "$state" in passed) return 0;; failed|interrupted) printf '%s\n' "$response"; return 1;; esac
+              sleep 2
+            done
+            printf '%s\n' "$response"
+            return 1
+          }
+          for mode in metadata data; do
+            response="$(curl -fksS -b "$cookies" "${headers[@]}" -d "{\"mode\":\"$mode\"}" "$api/backup/storages/primary/checks")"
+            operation="$(printf '%s' "$response" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')"
+            wait_check "$api/backup/storages/primary/checks" "$operation"
+          done
+          response="$(curl -fksS -b "$cookies" "${headers[@]}" -X POST "$api/backup/snapshots/$snapshot/restore-checks")"
+          operation="$(printf '%s' "$response" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')"
+          wait_check "$api/backup/snapshots/$snapshot/restore-checks" "$operation"
+          printf '%s' "$response" | python3 -c 'import json,sys;r=next(r for r in json.load(sys.stdin)["runs"] if r["id"]==sys.argv[1]);assert r["snapshot_id"]==sys.argv[2] and r["repository_id"]=="primary" and r["files"]==1 and r["bytes"]==20 and "SHA-256" in r["detail"]' "$operation" "$snapshot"
+          curl -fksS -b "$cookies" "$api/backup/snapshots/$snapshot" |
+            python3 -c 'import json,sys;s=json.load(sys.stdin);assert s["restore_check"]["state"]=="passed" and s["verification"]=="data_sha256_verified"'
+          curl -fksS -b "$cookies" "$api/backup/storages" |
+            python3 -c 'import json,sys;s=next(s for s in json.load(sys.stdin)["storages"] if s["id"]=="primary");assert s["metadata_check"]["state"]==s["data_check"]["state"]=="passed"'
+          sudo test -z "$(sudo ls -A /var/lib/backuphub/restore-checks)"
           # Test the shipped CLI against a second state directory.
           recovery_dir="$(mktemp -d)"
           sudo chown backuphub:backuphub "$recovery_dir"
@@ -326,15 +357,15 @@ jobs:
       - name: Verify SHA256 of built Debian artifact
         run: |
           cd release
-          sha256sum -c backuphub_0.5.1_amd64.deb.sha256
+          sha256sum -c backuphub_0.6.0_amd64.deb.sha256
       - name: Publish immutable release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.5.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "v0.5.1 already published; refusing to overwrite release artifacts"
+          if gh release view v0.6.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v0.6.0 already published; refusing to overwrite release artifacts"
             exit 0
           fi
-          gh release create v0.5.1 release/backuphub_0.5.1_amd64.deb release/backuphub_0.5.1_amd64.deb.sha256 \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.5.1" \
-            --notes-file docs/releases/v0.5.1.md
+          gh release create v0.6.0 release/backuphub_0.6.0_amd64.deb release/backuphub_0.6.0_amd64.deb.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "BackupHub v0.6.0" \
+            --notes-file docs/releases/v0.6.0.md

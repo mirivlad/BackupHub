@@ -2,7 +2,7 @@
 
 The running service uses native Restic file-tree snapshots. Each verified tree has a separate `bh-commit-<id>` marker containing `backuphub-tree-manifest.json` in the `backuphub.restic.tree.v1` format. The catalog links that marker, the native tree ID and the registered repository. The [recovery runbook](recovery.md) describes how to import tree manifests into recovered state.
 
-The service reads back the new snapshot's metadata and contents before writing its commit marker. Full repository checks with `restic check --read-data` are separate maintenance operations.
+The service matches paths, types and sizes in the authenticated snapshot tree against the complete TAR data stream before writing its commit marker. Full repository checks with `restic check --read-data` are separate maintenance operations.
 
 The remaining sections describe the separate component adapter in `internal/storage/restic` for composed application snapshots. It is exercised in integration tests.
 

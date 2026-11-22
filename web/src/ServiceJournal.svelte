@@ -33,7 +33,7 @@
 
 <section>
  <header class="workspace-header">
-  <div><h1>Журнал службы</h1><p class="secondary">Последние 100 записей systemd для BackupHub. Новые записи появляются сверху.</p></div>
+  <div><h1>Журнал службы</h1><p class="secondary">До 100 последних сообщений BackupHub с момента запуска службы.</p></div>
   <button class="outline" onclick={()=>void refresh()} disabled={loading}>Обновить</button>
  </header>
  {#if error}<p class="error" role="alert">{error}</p>{/if}

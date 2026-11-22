@@ -4,12 +4,13 @@
  import CronRuleEditor from './CronRuleEditor.svelte';
  import SnapshotBrowser from './SnapshotBrowser.svelte';
  import {formatDuration} from './duration';
+ import {checkDate,checkLabel,checkTone,type CheckStatus} from './verification';
  type Section='overview'|'jobs'|'sources'|'storages'|'history'|'runs';
  type Source={id:string;name:string;kind:string;host:string;share:string;path:string;username:string;database:string;access_status?:string;access_hint?:string;auth_method?:string;host_key_fingerprint?:string;};
  type Storage={id:string;name:string;path:string;free_bytes:number;status:string;password_mode:string};
  type Profile={mode:'interval'|'daily'|'weekly'|'cron';interval_value:number;interval_unit:string;days_of_week:string;hour:number;minute:number;timezone:string;first_run:string;cron_expression?:string};
  type Job={id:string;name:string;source_id:string;source_name:string;repository_id:string;schedule:Profile;enabled:boolean;next_run:string;running:boolean;manual_queued:boolean;current_state?:string};
- type Snapshot={id:string;source_id:string;source_name:string;kind:string;created_at:string;verification:string;fidelity:string;consistency:string;duration_ms?:number};
+ type Snapshot={id:string;source_id:string;source_name:string;kind:string;created_at:string;verification:string;fidelity:string;consistency:string;duration_ms?:number;restore_check:CheckStatus;can_test_restore:boolean};
  type Run={id:string;task_id:string;state:string;started_at:string;finished_at?:string;failure_code?:string;snapshot_id?:string};
  let {section,role,jobToEdit='',onNavigate}:{section:Section;role:string;jobToEdit?:string;onNavigate:(section:Section)=>void}=$props();
  let sources=$state<Source[]>([]);
@@ -18,6 +19,7 @@
  let snapshots=$state<Snapshot[]>([]);
  let runs=$state<Run[]>([]);
  let activeSnapshot=$state<Snapshot|null>(null);
+ let snapshotPanel=$state<HTMLElement>();
  let busy=$state(false);
  let loaded=$state(false);
  let error=$state('');
@@ -85,6 +87,7 @@
    restic_backup_failed:'Restic не смог записать резервную копию в хранилище',
    restic_partial_backup:'Restic прочитал не все данные. Снимок не добавлен в историю',
    restic_verification_failed:'Не удалось проверить целостность данных в хранилище',
+   repository_busy:'Хранилище занято другой операцией. Задание будет повторено.',
    restic_repository_locked:'Хранилище занято другой операцией Restic или блокировка недоступна для снятия',
    restic_manifest_failed:'Не удалось сохранить или проверить метаданные снимка',
    snapshot_catalog_failed:'Снимок записан, но его не удалось добавить в каталог',
@@ -175,11 +178,17 @@
  }
  async function refreshSnapshots(){
   snapshots=(await api<{snapshots:Snapshot[]}>('/snapshots')).snapshots;
+  if(activeSnapshot)activeSnapshot=snapshots.find(snapshot=>snapshot.id===activeSnapshot?.id)??activeSnapshot;
+ }
+ async function showSnapshot(snapshot:Snapshot){
+  activeSnapshot=snapshot;
+  await tick();
+  snapshotPanel?.scrollIntoView({block:'start'});
  }
  async function openRunSnapshot(id:string){
   error='';
   try{
-   activeSnapshot=await api<Snapshot>('/snapshots/'+encodeURIComponent(id));
+   await showSnapshot(await api<Snapshot>('/snapshots/'+encodeURIComponent(id)));
    onNavigate('history');
   }catch(e){error=e instanceof Error?e.message:'Снимок недоступен';}
  }
@@ -417,9 +426,7 @@
     </tr>{/each}</tbody></table></div>{/if}
   </section>
  {:else if section==='storages'}
-  {#if canConfigure}<StoragePane onCreated={refresh}/>{:else}
-   <section class="detail-card"><h2>Хранилища</h2><div class="table-scroll"><table><thead><tr><th>Название</th><th>Путь</th><th>Место</th><th>Состояние</th></tr></thead><tbody>{#each storages as s(s.id)}<tr><td>{s.name}</td><td>{s.path}</td><td>{size(s.free_bytes)}</td><td>{s.status==='available'?'Доступно':'Недоступно'}</td></tr>{/each}</tbody></table></div></section>
-  {/if}
+  <StoragePane onCreated={refresh} {canConfigure} {canRun}/>
  {:else if section==='runs'}
   <section class="detail-card"><div class="section-head"><h2>Последние запуски <span class="count">{runs.length}</span></h2></div>
    {#if runs.length===0}<div class="empty-state"><strong>Журнал пуст</strong><p>Результаты запусков появятся здесь.</p></div>
@@ -428,10 +435,12 @@
  {:else if section==='history'}
   <section class="detail-card"><div class="section-head"><h2>Снимки <span class="count">{snapshots.length}</span></h2></div>
    {#if snapshots.length===0}<div class="empty-state"><strong>Нет резервных копий</strong><p>После успешного выполнения задания здесь появится первый снимок.</p></div>
-   {:else}<div class="table-scroll"><table><thead><tr><th>Дата</th><th>Источник</th><th>Длительность</th><th>Проверка</th><th></th></tr></thead><tbody>{#each snapshots as s(s.id)}<tr><td>{fmt(s.created_at)}</td><td><strong>{s.source_name}</strong></td><td>{formatDuration(s.duration_ms)}</td><td><span class:good-state={s.verification==='data_sha256_verified'} class:warn-state={s.verification!=='data_sha256_verified'} class="status">{s.verification==='data_sha256_verified'?'Проверено':'Требует проверки'}</span></td><td><button class="outline" disabled={busy} onclick={()=>activeSnapshot=s}>Открыть снимок</button></td></tr>{/each}</tbody></table></div>{/if}
+   {:else}<div class="table-scroll"><table><thead><tr><th>Дата</th><th>Источник</th><th>Длительность</th><th>Проверка при записи</th><th>Пробное восстановление</th><th></th></tr></thead><tbody>{#each snapshots as s(s.id)}<tr><td>{fmt(s.created_at)}</td><td><strong>{s.source_name}</strong></td><td>{formatDuration(s.duration_ms)}</td><td><span class:good-state={s.verification==='data_sha256_verified'} class:warn-state={s.verification!=='data_sha256_verified'} class="status">{s.verification==='data_sha256_verified'?'Проверено':'Требует проверки'}</span></td><td>{#if s.can_test_restore}
+      <span class={'check-badge '+checkTone(s.restore_check.state)} title={s.restore_check.finished_at ? checkDate(s.restore_check.finished_at) : ''}>{checkLabel(s.restore_check.state)}</span>
+     {:else}<span class="secondary">Для файловых источников</span>{/if}</td><td><button class="outline" disabled={busy} onclick={()=>void showSnapshot(s)}>Открыть снимок</button></td></tr>{/each}</tbody></table></div>{/if}
   </section>
   {#if activeSnapshot}
-   <section class="detail-card">
+   <section class="detail-card" bind:this={snapshotPanel}>
     {#key activeSnapshot.id}
      <SnapshotBrowser snapshot={activeSnapshot} {canExport} onClose={()=>activeSnapshot=null}/>
     {/key}

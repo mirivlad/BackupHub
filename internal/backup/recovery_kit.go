@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/mirivlad/BackupHub/internal/catalog"
 	"github.com/mirivlad/BackupHub/internal/scheduler"
@@ -162,8 +163,13 @@ func prepareRecoveredCatalog(ctx context.Context, staging string, manifest recov
 	if _, err = scheduler.New(c, nil).RecoverInterrupted(ctx); err != nil {
 		return err
 	}
+	if _, err = c.DB.ExecContext(ctx, `UPDATE verification_runs SET state='interrupted',finished_at=?,
+	 detail='Операция остановлена при восстановлении каталога.' WHERE state IN ('queued','running')`, time.Now().UnixMilli()); err != nil {
+		return err
+	}
 	for _, statement := range []string{
 		"UPDATE schedule_entries SET enabled=0, manual_pending=0",
+		"UPDATE repository_check_schedules SET next_run=NULL",
 		"DELETE FROM sessions",
 		"DELETE FROM bootstrap",
 		"PRAGMA wal_checkpoint(TRUNCATE)",

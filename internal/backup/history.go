@@ -15,18 +15,22 @@ import (
 )
 
 const snapshotQuery = `SELECT f.snapshot_id,f.source_id,s.display_name,s.kind,f.restic_id,f.root_path,f.committed_at,f.verification,
- f.fidelity,f.consistency,sp.repository_id,f.capture_duration_ms,r.started_at,r.finished_at
+ f.fidelity,f.consistency,sp.repository_id,f.capture_duration_ms,r.started_at,r.finished_at,COALESCE(vc.state,''),vc.finished_at
  FROM file_snapshots f JOIN sources s ON f.source_id=s.id JOIN snapshots sp ON sp.id=f.snapshot_id
- LEFT JOIN schedule_runs r ON r.id=f.run_id`
+ LEFT JOIN schedule_runs r ON r.id=f.run_id
+ LEFT JOIN verification_runs vc ON vc.id=(
+   SELECT v.id FROM verification_runs v WHERE v.snapshot_id=f.snapshot_id
+   ORDER BY v.queued_at DESC,v.id DESC LIMIT 1
+ )`
 
 func (s *Service) ListSnapshots(ctx context.Context, sourceID string) ([]Snapshot, error) {
-	query := snapshotQuery
+	query := snapshotQuery + " WHERE sp.state='committed'"
 	args := []any{}
 	if sourceID != "" {
 		if !safeID(sourceID) {
 			return nil, errors.New("invalid source ID")
 		}
-		query += " WHERE f.source_id=?"
+		query += " AND f.source_id=?"
 		args = append(args, sourceID)
 	}
 	query += " ORDER BY f.committed_at DESC LIMIT 500"
@@ -49,15 +53,16 @@ func (s *Service) Snapshot(ctx context.Context, id string) (Snapshot, error) {
 	if !safeID(id) {
 		return Snapshot{}, errors.New("invalid snapshot ID")
 	}
-	return scanSnapshot(s.catalog.DB.QueryRowContext(ctx, snapshotQuery+` WHERE f.snapshot_id=?`, id))
+	return scanSnapshot(s.catalog.DB.QueryRowContext(ctx, snapshotQuery+` WHERE f.snapshot_id=? AND sp.state='committed'`, id))
 }
 
 func scanSnapshot(row interface{ Scan(...any) error }) (Snapshot, error) {
 	var s Snapshot
-	var duration sql.NullInt64
+	var duration, checkFinished sql.NullInt64
+	var checkState string
 	var started, finished sql.NullString
 	if err := row.Scan(&s.ID, &s.SourceID, &s.SourceName, &s.Kind, &s.ResticID, &s.Root, &s.At, &s.Verification,
-		&s.Fidelity, &s.Consistency, &s.RepositoryID, &duration, &started, &finished); err != nil {
+		&s.Fidelity, &s.Consistency, &s.RepositoryID, &duration, &started, &finished, &checkState, &checkFinished); err != nil {
 		return s, err
 	}
 	start, startErr := time.Parse(time.RFC3339Nano, started.String)
@@ -68,6 +73,8 @@ func scanSnapshot(row interface{ Scan(...any) error }) (Snapshot, error) {
 	} else if duration.Valid {
 		s.DurationMS = &duration.Int64
 	}
+	s.RestoreCheck = checkStatus(checkState, checkFinished, defaultCheckFreshness, time.Now())
+	s.CanTestRestore = supportsRestoreCheck(s.Kind)
 	return s, nil
 }
 func (s *Service) Files(ctx context.Context, id string) ([]File, error) {

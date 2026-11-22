@@ -31,6 +31,11 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if err != nil {
 		return fmt.Errorf("missing destination storage: %w", err)
 	}
+	release, ok := s.tryRepositoryWork(repoID)
+	if !ok {
+		return &scheduler.BackupFailure{Code: "repository_busy", Err: scheduler.ErrSourceUnavailable}
+	}
+	defer release()
 	destination, err := s.repositoryFor(ctx, repoID)
 	if err != nil {
 		return &scheduler.BackupFailure{Code: "storage_unavailable", Err: errors.Join(scheduler.ErrSourceUnavailable, err)}
@@ -78,12 +83,7 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if err = report(domain.JobCommitting); err != nil {
 		return err
 	}
-	var native string
-	err = destination.retryAfterStaleLock(ctx, func() error {
-		var backupErr error
-		native, backupErr = destination.treeBackup(ctx, root, source.ID)
-		return backupErr
-	})
+	native, err := destination.treeBackup(ctx, root, source.ID)
 	if err != nil {
 		code := "restic_backup_failed"
 		var exitErr *exec.ExitError
@@ -96,7 +96,7 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 	if err = report(domain.JobVerifying); err != nil {
 		return err
 	}
-	if err = destination.retryAfterStaleLock(ctx, func() error { return destination.verifySnapshot(ctx, native) }); err != nil {
+	if err = destination.verifySnapshot(ctx, native); err != nil {
 		if ctx.Err() == nil {
 			slog.WarnContext(ctx, "restic snapshot verification failed", "run_id", t.RunID,
 				"job_id", t.ID, "repository_id", repoID, "detail", err)
@@ -124,12 +124,7 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 		fidelity = "content_and_timestamps"
 	}
 	marker := portableRecord{ID: id, SourceID: source.ID, SourceName: source.Name, Kind: source.Kind, Root: root, ResticID: native, At: at, DataVerified: true, Consistency: consistency, Fidelity: fidelity, CaptureDurationMS: &duration}
-	var markerID string
-	err = destination.retryAfterStaleLock(ctx, func() error {
-		var commitErr error
-		markerID, commitErr = destination.commit(ctx, marker)
-		return commitErr
-	})
+	markerID, err := destination.commit(ctx, marker)
 	if err != nil {
 		return resticStageFailure("restic_manifest_failed", err)
 	}
@@ -148,6 +143,7 @@ func (s *Service) Execute(ctx context.Context, t scheduler.Task, report func(dom
 }
 
 func resticStageFailure(code string, err error) *scheduler.BackupFailure {
+	err = resticLockError(err)
 	if errors.Is(err, errResticRepositoryLocked) {
 		code = "restic_repository_locked"
 	}

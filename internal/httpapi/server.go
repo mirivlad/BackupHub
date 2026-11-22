@@ -15,10 +15,11 @@ import (
 	"github.com/mirivlad/BackupHub/internal/auth"
 	"github.com/mirivlad/BackupHub/internal/backup"
 	"github.com/mirivlad/BackupHub/internal/catalog"
+	"github.com/mirivlad/BackupHub/internal/servicejournal"
 	"github.com/mirivlad/BackupHub/internal/vault"
 )
 
-const Version = "0.5.1"
+const Version = "0.6.0"
 const sessionCookie = "backuphub_session"
 const csrfCookie = "backuphub_csrf"
 
@@ -27,6 +28,7 @@ type Server struct {
 	auth    *auth.Store
 	vault   *vault.Vault // Not exposed over the public API.
 	backup  *backup.Service
+	journal *servicejournal.Journal
 	limits  *rateLimiter
 }
 type rateBucket struct {
@@ -68,12 +70,15 @@ func (l *rateLimiter) allow(request *http.Request, action string, max int) bool 
 	return b.count <= max
 }
 
-func New(c *catalog.Catalog, v *vault.Vault) http.Handler { return newHandler(c, v, nil) }
-func NewWithBackup(c *catalog.Catalog, v *vault.Vault, backup *backup.Service) http.Handler {
-	return newHandler(c, v, backup)
+func New(c *catalog.Catalog, v *vault.Vault) http.Handler { return newHandler(c, v, nil, nil) }
+func NewWithBackup(c *catalog.Catalog, v *vault.Vault, b *backup.Service) http.Handler {
+	return newHandler(c, v, b, nil)
 }
-func newHandler(c *catalog.Catalog, v *vault.Vault, b *backup.Service) http.Handler {
-	s := &Server{catalog: c, auth: auth.New(c), vault: v, backup: b, limits: &rateLimiter{buckets: make(map[string]rateBucket)}}
+func NewWithBackupAndJournal(c *catalog.Catalog, v *vault.Vault, b *backup.Service, journal *servicejournal.Journal) http.Handler {
+	return newHandler(c, v, b, journal)
+}
+func newHandler(c *catalog.Catalog, v *vault.Vault, b *backup.Service, journal *servicejournal.Journal) http.Handler {
+	s := &Server{catalog: c, auth: auth.New(c), vault: v, backup: b, journal: journal, limits: &rateLimiter{buckets: make(map[string]rateBucket)}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/health", s.health)
 	mux.HandleFunc("/api/v1/setup/status", s.setupStatus)

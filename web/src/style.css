@@ -86,3 +86,8 @@ label{color:var(--text)}
 .instance-id{display:block;font-size:12px;word-break:break-all;background:#f5f7fb;padding:10px}
 @media(max-width:1100px){.dashboard{padding:26px 25px 50px}.topbar{padding:0 25px}}
 @media(max-width:750px){.shell{display:flex;flex-direction:column}.sidebar{position:static;height:auto;padding:14px 12px;overflow:visible}.sidebar .brandline{margin:1px 8px 10px}.sidebar-navigation{flex-direction:row;flex-wrap:wrap;gap:4px}.side-section,.sidebar-bottom{display:none}.nav-button{width:auto;min-height:38px;padding:8px 9px;gap:6px}.nav-button span{font-size:11px}.nav-button svg{width:17px;height:17px}.topbar{height:63px;padding:0 16px}.dashboard{padding:23px 16px 50px}.detail-card{padding:17px}.workspace-header,.heading{align-items:flex-start;flex-direction:column;gap:15px}.user-title{display:none}.auth-card{padding:25px}}
+
+.check-badge{display:inline-flex;align-items:center;white-space:nowrap;border-radius:7px;padding:5px 10px;color:#fff;background:#48576e;font-size:11px;font-weight:750}
+.check-badge.good-state{background:#237349}
+.check-badge.warn-state{background:#865010}
+.check-badge.info-state{background:#285da6}
