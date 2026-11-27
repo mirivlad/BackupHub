@@ -1,5 +1,7 @@
 # BackupHub
 
+[![Угостить разработчика кофе / Buy me a coffee](https://img.shields.io/badge/Support-Buy%20me%20a%20coffee-7055a5?style=flat-square&logo=buymeacoffee&logoColor=white)](https://mirv.top/support/)
+
 **BackupHub** — свободная self-hosted система резервного копирования и восстановления. Лицензия GNU GPL-3.0-only.
 
 ## 0.7.0
@@ -108,4 +110,4 @@ go build -o backuphub ./cmd/backuphub
 
 Если проект оказался полезен, вы можете добровольно поддержать его развитие. / If this project is useful to you, you can voluntarily support its development.
 
-[![Угостить разработчика кофе / Buy me a coffee](https://img.shields.io/badge/Support-Buy%20me%20a%20coffee-7055a5?style=flat-square&logo=buymeacoffee&logoColor=white)](https://mirv.top/support/)
+[Страница поддержки / Support page](https://mirv.top/support/)
